@@ -1,0 +1,75 @@
+[project]
+name = "musicbot"
+version = "0.1.0"
+description = "A hardened Discord bot that streams YouTube and SoundCloud audio into voice channels."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "twhalley" }]
+dependencies = [
+    "discord.py==2.7.1",
+    "PyNaCl==1.6.2",
+    "yt-dlp==2026.7.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "pytest-cov==7.1.0",
+    "ruff==0.15.21",
+    "mypy==2.2.0",
+    "pip-audit==2.10.1",
+]
+
+[project.scripts]
+musicbot = "musicbot.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "S", "ASYNC", "RUF"]
+# S101: asserts are fine in tests (handled per-file below)
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+# Tests may assert and use dummy "tokens"/secrets as fixtures.
+"tests/**" = ["S101", "S105", "S106"]
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "src"
+packages = ["musicbot"]
+strict = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+# discord.py / yt-dlp ship partial stubs; don't fail the build on their internals.
+[[tool.mypy.overrides]]
+module = ["yt_dlp.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "--cov=musicbot --cov-report=term-missing --cov-fail-under=80"
+
+[tool.coverage.run]
+source = ["musicbot"]
+branch = true
+# Exclude the thin Discord I/O glue that requires a live gateway/voice connection
+# to exercise; the pure logic it drives (queue, source, config, urls) is covered.
+omit = [
+    "src/musicbot/__main__.py",
+    "src/musicbot/bot.py",
+    "src/musicbot/cogs/*",
+]

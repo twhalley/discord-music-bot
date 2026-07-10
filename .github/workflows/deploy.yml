@@ -1,0 +1,56 @@
+name: Deploy
+
+# Manual trigger keeps deploys deliberate. The `production` environment gates
+# access to secrets and can require a reviewer's approval (repo Settings ->
+# Environments -> production -> Required reviewers).
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to deploy (e.g. latest or a git sha)"
+        required: false
+        default: latest
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to Oracle VM
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          # Fail the deploy if any step errors.
+          script_stop: true
+          # envs lists which local env vars to forward into the remote script.
+          envs: IMAGE_TAG,BOT_TOKEN
+          script: |
+            set -euo pipefail
+            IMAGE="ghcr.io/${{ github.repository }}:${IMAGE_TAG}"
+
+            # Write the token to a root-owned, 0600 EnvironmentFile that only the
+            # systemd unit reads. The token never lands in the image or in logs.
+            umask 077
+            printf 'DISCORD_BOT_TOKEN=%s\n' "${BOT_TOKEN}" | sudo tee /etc/musicbot.env >/dev/null
+            sudo chmod 600 /etc/musicbot.env
+
+            echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u ${{ github.actor }} --password-stdin
+            sudo podman pull "${IMAGE}"
+
+            # Point the systemd unit at the freshly pulled tag and restart it.
+            printf 'MUSICBOT_IMAGE=%s\n' "${IMAGE}" | sudo tee /etc/musicbot.image >/dev/null
+            sudo systemctl restart musicbot.service
+            sudo systemctl --no-pager status musicbot.service | head -n 10
+        env:
+          IMAGE_TAG: ${{ github.event.inputs.tag }}
+          BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}

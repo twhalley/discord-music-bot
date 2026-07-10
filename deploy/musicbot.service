@@ -1,0 +1,43 @@
+# systemd unit for the Discord music bot, running as a hardened podman container.
+# Install to /etc/systemd/system/musicbot.service on the Oracle VM.
+#
+# Reads two root-owned, 0600 files that the GitHub deploy workflow writes:
+#   /etc/musicbot.image   ->  MUSICBOT_IMAGE=ghcr.io/OWNER/REPO:TAG
+#   /etc/musicbot.env     ->  DISCORD_BOT_TOKEN=...
+#
+# The container itself keeps the same hardening as embed-fixer: read-only root
+# filesystem, all capabilities dropped, no privilege escalation, non-root user.
+
+[Unit]
+Description=Discord music bot (YouTube/SoundCloud)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/musicbot.image
+EnvironmentFile=/etc/musicbot.env
+
+# Clean up any prior container before starting.
+ExecStartPre=-/usr/bin/podman rm -f musicbot
+ExecStart=/usr/bin/podman run \
+    --rm \
+    --name musicbot \
+    --read-only \
+    --tmpfs /tmp:rw,size=64m,mode=1777 \
+    --cap-drop=ALL \
+    --security-opt=no-new-privileges \
+    --pids-limit=256 \
+    --memory=512m \
+    --env-file=/etc/musicbot.env \
+    ${MUSICBOT_IMAGE}
+ExecStop=/usr/bin/podman stop --time 10 musicbot
+
+Restart=always
+RestartSec=5
+# Give up only if it crash-loops hard (>5 times in 60s).
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target

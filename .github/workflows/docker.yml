@@ -70,6 +70,10 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: "1"
           ignore-unfixed: true
+          # Scan for CVEs only. The secret scanner otherwise flags constants
+          # bundled inside third-party libraries (e.g. yt-dlp's extractors) as
+          # fake "secrets"; our real secrets are injected from the env at runtime.
+          scanners: vuln
 
       - name: Upload Trivy results to the Security tab
         if: always()

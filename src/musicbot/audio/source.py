@@ -40,7 +40,8 @@ class SourceError(RuntimeError):
 class _Extractor(Protocol):
     """Structural type for the subset of yt-dlp we use (keeps tests dependency-free)."""
 
-    def extract_info(self, url: str, download: bool = ...) -> dict[str, Any] | None: ...
+    def extract_info(self, url: str, download: bool = ...) -> dict[str, Any] | None:
+        """Resolve ``url`` to a yt-dlp info dict (or ``None`` if nothing matched)."""
 
 
 def _build_query(raw: str) -> str:

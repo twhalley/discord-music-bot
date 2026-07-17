@@ -7,7 +7,7 @@
 
 ########################  builder  ########################
 # python:3.13-slim-bookworm
-FROM python@sha256:fcbd8dfc2605ba7c2eca646846c5e892b2931e41f6227985154a596f26ab8ed7 AS builder
+FROM python@sha256:311ea5bb79f1a238ee9e38f8d5f09cb3b4b244575cf49e27cf365ea7e60f11d4 AS builder
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -26,7 +26,7 @@ RUN pip install --no-cache-dir .
 
 ########################  runtime  ########################
 # python:3.13-slim-bookworm
-FROM python@sha256:fcbd8dfc2605ba7c2eca646846c5e892b2931e41f6227985154a596f26ab8ed7 AS runtime
+FROM python@sha256:311ea5bb79f1a238ee9e38f8d5f09cb3b4b244575cf49e27cf365ea7e60f11d4 AS runtime
 
 # ffmpeg is required to transcode/stream audio; libopus for Discord voice.
 RUN apt-get update \

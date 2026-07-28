@@ -49,12 +49,26 @@ Create instance** and work through the wizard:
 - Ignore the **IPv6** section (leave it off).
 
 ### Add SSH keys
-- Leave **Generate a key pair for me** selected.
-- Click **Save private key** and download the `.key` file. **This file is your
-  `SSH_PRIVATE_KEY` secret and cannot be re-downloaded later — keep it safe.**
-- Click **Save public key** too (handy to have).
-- (If you already have a key, choose *Upload public key file* and paste your own
-  `.pub` instead; then the matching private key is your `SSH_PRIVATE_KEY`.)
+
+Generate the key yourself first, then paste the public half — don't let Oracle
+generate one:
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/oracle-admin -N "" -C "admin@discord-music-bot"
+```
+
+- Choose **Paste public keys** and paste the contents of `~/.ssh/oracle-admin.pub`.
+- The private half never leaves your machine, and it can't be lost to a browser
+  download you forget to save.
+
+> ⚠️ Oracle's **Save private key** download is offered **once** and cannot be
+> repeated. If you lose it there is no way back in: instance metadata is read
+> only at first boot, so a new key cannot be authorised without existing access,
+> and the recovery paths (serial console into GRUB, or detaching the boot volume
+> onto a second instance) are far more work than recreating the VM.
+
+This is the **admin** key. The deploy key is a separate, unprivileged one
+created in section 3.
 
 ### Finish
 Click **Create** and wait for the instance state to go **Running**. Then check
@@ -65,7 +79,9 @@ the **Public IPv4 address** field on the instance details page:
 - **It's blank or says "-"** → go to section 2. The instance is fine; it just
   isn't reachable yet.
 
-The default login user on Ubuntu images is **`ubuntu`** — that's your `SSH_USER`.
+The default login user on Ubuntu images is **`ubuntu`**. Use it for the setup in
+section 3 — but note it is *not* your `SSH_USER` secret, which is the dedicated
+`musicbot` service account created there.
 
 ---
 
@@ -190,41 +206,107 @@ ssh -i /path/to/your-key.key ubuntu@<PUBLIC_IP>
 
 ## 3. Prepare the VM (one time)
 
-The bot runs **rootless**: a systemd *user* unit, a container owned by the
-`ubuntu` user, and no `sudo` rights for the deploy account at all. Nothing here
-needs root — no privileged ports, no host mounts, and the image already drops to
-an unprivileged user internally. The upshot is that `SSH_PRIVATE_KEY` is not a
-root credential on the VM.
+The bot runs **rootless**, under a **dedicated `musicbot` service account** that
+holds the deploy key and has no `sudo` rights at all. Nothing here needs root —
+no privileged ports, no host mounts, and the image already drops to an
+unprivileged user internally.
 
-`scp` the unit up, SSH in, and run:
+> **Why a separate account, rather than `ubuntu`?** Ubuntu cloud images ship
+> `/etc/sudoers.d/90-cloud-init-users` granting the default login account
+> `NOPASSWD:ALL`. Putting the deploy key on `ubuntu` therefore makes
+> `SSH_PRIVATE_KEY` a *root* credential no matter how carefully the deploy
+> script avoids `sudo`. A dedicated account is what actually makes the claim
+> true. Keep using `ubuntu` for administration.
+
+Generate the deploy key **on your machine** (so the private half never travels):
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/musicbot-deploy -N "" -C "github-deploy"
+```
+
+Then SSH in as `ubuntu`, `scp` the unit up, and run:
 
 ```bash
 sudo apt-get update && sudo apt-get install -y podman uidmap
 
-# Rootless podman needs subuid/subgid ranges; Ubuntu cloud images often ship
-# without them for the `ubuntu` user.
-grep -q '^ubuntu:' /etc/subuid || \
-  sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 ubuntu
+# Dedicated service account: no sudo group, password locked, key auth only.
+sudo useradd --create-home --shell /bin/bash musicbot
+sudo passwd -l musicbot
+MB_UID=$(id -u musicbot)
 
-# Let user services run without a login session — i.e. start at boot.
-sudo loginctl enable-linger "$USER"
+# Rootless podman needs subuid/subgid ranges.
+grep -q '^musicbot:' /etc/subuid || \
+  sudo usermod --add-subuids 200000-265535 --add-subgids 200000-265535 musicbot
 
-mkdir -p ~/.config/systemd/user ~/.config/musicbot
-install -m 644 musicbot.service ~/.config/systemd/user/musicbot.service
-systemctl --user daemon-reload
-systemctl --user enable musicbot.service  # first real start happens on deploy
+# Install the deploy public key. Forwarding is disabled: this key exists to run
+# one deploy script, not to tunnel into the VPC.
+sudo install -d -m 700 -o musicbot -g musicbot /home/musicbot/.ssh
+printf 'no-agent-forwarding,no-port-forwarding,no-X11-forwarding %s\n' \
+  "$(cat musicbot-deploy.pub)" | sudo tee /home/musicbot/.ssh/authorized_keys >/dev/null
+sudo chown musicbot:musicbot /home/musicbot/.ssh/authorized_keys
+sudo chmod 600 /home/musicbot/.ssh/authorized_keys
+
+# Let its services run without a login session — i.e. start at boot.
+sudo loginctl enable-linger musicbot
+
+sudo install -d -m 700 -o musicbot -g musicbot \
+  /home/musicbot/.config/systemd/user /home/musicbot/.config/musicbot
+sudo install -m 644 -o musicbot -g musicbot musicbot.service \
+  /home/musicbot/.config/systemd/user/musicbot.service
+
+sudo -u musicbot env XDG_RUNTIME_DIR=/run/user/$MB_UID \
+  systemctl --user daemon-reload
+sudo -u musicbot env XDG_RUNTIME_DIR=/run/user/$MB_UID \
+  systemctl --user enable musicbot.service  # first real start happens on deploy
 ```
 
-Then confirm the cgroup controllers the unit's `--memory` and `--pids-limit`
-flags depend on are delegated to your user slice:
+Confirm the account really is unprivileged, and that the cgroup controllers the
+unit's `--memory` and `--pids-limit` flags depend on are delegated to it:
 
 ```bash
-cat /sys/fs/cgroup/user.slice/user-$(id -u).slice/cgroup.controllers
+ssh -i ~/.ssh/musicbot-deploy musicbot@<PUBLIC_IP> 'id; sudo -n true'
+cat /sys/fs/cgroup/user.slice/user-$(id -u musicbot).slice/cgroup.controllers
 ```
 
-`memory` and `pids` must both appear. Ubuntu 24.04 delegates them by default; if
-they're missing the container fails to start with a cgroup error rather than
-quietly ignoring the limits.
+`sudo -n true` must fail. `memory` and `pids` must both appear — if they're
+missing the container fails to start with a cgroup error rather than quietly
+ignoring the limits.
+
+### Egress restrictions (recommended)
+
+yt-dlp follows redirects, so an open redirect on an allowed host could bounce a
+request onto the VPC or the instance metadata service — the application's host
+allowlist can't see past a redirect. Denying it at the network layer closes that:
+
+```bash
+sudo nft -f - <<EOF
+table inet musicbot
+delete table inet musicbot
+table inet musicbot {
+    chain output {
+        type filter hook output priority -10; policy accept;
+        # DNS FIRST: on Oracle Cloud the resolver shares an address with the
+        # metadata service, so a blanket block breaks name resolution entirely.
+        ip daddr 169.254.169.254 udp dport 53 accept
+        ip daddr 169.254.169.254 tcp dport 53 accept
+        skuid $(id -u musicbot) ip daddr 169.254.0.0/16 drop
+        skuid $(id -u musicbot) ip daddr 10.0.0.0/8 drop
+        skuid $(id -u musicbot) ip daddr 172.16.0.0/12 drop
+        skuid $(id -u musicbot) ip daddr 192.168.0.0/16 drop
+    }
+}
+EOF
+```
+
+Scoped to the service account's uid, so root and the admin account are
+unaffected — `apt`, cloud-init and `systemd-resolved` all legitimately use these
+ranges. Its own table at priority `-10` leaves Oracle's default ruleset alone;
+remove it with `sudo nft delete table inet musicbot`.
+
+Persist it across reboots with a oneshot unit (`ExecStart=/usr/sbin/nft -f
+/etc/nftables-musicbot.conf`) rather than `/etc/nftables.conf`, whose default
+begins with `flush ruleset` and would drop Oracle's rules — including the one
+permitting inbound SSH.
 
 Finally, capture the host key fingerprint for the `SSH_HOST_FINGERPRINT` secret.
 Run this **from your laptop**, not the VM:
@@ -256,8 +338,8 @@ Repo **Settings → Environments → New environment → name it `production`**,
 | Secret | How to get the value |
 | --- | --- |
 | `SSH_HOST` | The VM's **Public IPv4 address** from the instance details page. |
-| `SSH_USER` | `ubuntu` (default user on Oracle Ubuntu images). |
-| `SSH_PRIVATE_KEY` | The **full contents** of the `.key` file you downloaded — including the `-----BEGIN...-----` and `-----END...-----` lines. |
+| `SSH_USER` | `musicbot` — the dedicated service account from section 3, **not** `ubuntu`. |
+| `SSH_PRIVATE_KEY` | The **full contents** of `~/.ssh/musicbot-deploy` — including the `-----BEGIN...-----` and `-----END...-----` lines. |
 | `SSH_HOST_FINGERPRINT` | The `ssh-keyscan` output from section 3, e.g. `SHA256:abc123…`. |
 | `DISCORD_BOT_TOKEN` | Discord Developer Portal → your app → **Bot** → **Reset/Copy Token**. |
 
@@ -292,7 +374,7 @@ and pushes `ghcr.io/OWNER/REPO:latest`. Then run the **Deploy** workflow
 Verify it came up:
 
 ```bash
-ssh -i /path/to/your-key.key ubuntu@<PUBLIC_IP> \
+ssh -i ~/.ssh/musicbot-deploy musicbot@<PUBLIC_IP> \
   'systemctl --user --no-pager status musicbot.service'
 ```
 

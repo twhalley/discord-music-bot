@@ -19,9 +19,19 @@ This project is built to be safe to run unattended:
   is git-ignored.
 - **Hardened container.** Read-only root filesystem, `--cap-drop=ALL`,
   `--security-opt=no-new-privileges`, non-root user, memory and PID limits.
-- **Rootless on the host.** The container runs under a systemd *user* unit as an
-  unprivileged account with no `sudo` rights, so a compromised deploy key does
-  not confer root on the VM.
+- **Rootless on the host, under a dedicated account.** The container runs as a
+  systemd *user* unit owned by a `musicbot` service account that holds the
+  deploy key, is in no `sudo` group and has its password locked. Nothing in the
+  deploy path invokes `sudo`. This matters because Ubuntu cloud images grant the
+  *default* login account passwordless `sudo` — keeping the deploy key off that
+  account is what stops it being a root credential. Administration stays on the
+  separate default account.
+- **Network egress is restricted.** yt-dlp follows redirects, so an open
+  redirect on an allowed host could otherwise bounce a request onto the VPC or
+  the instance metadata service. Host firewall rules deny the bot's uid
+  everything link-local and RFC1918, excepting DNS — which shares an address
+  with the metadata service on Oracle Cloud. The application allowlist and this
+  rule are independent layers; neither is relied on alone.
 - **Authenticated deploys.** The deploy SSH connection pins the VM's host key
   fingerprint, so the token is never handed to an impostor host.
 - **No arbitrary outbound fetches.** `/play` takes free-form input from any

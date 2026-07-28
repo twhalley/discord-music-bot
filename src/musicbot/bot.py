@@ -35,7 +35,15 @@ class MusicBot(commands.Bot):
 
     def __init__(self, config: Config) -> None:
         self.config = config
-        super().__init__(command_prefix=commands.when_mentioned, intents=build_intents())
+        super().__init__(
+            command_prefix=commands.when_mentioned,
+            intents=build_intents(),
+            # Track titles come from yt-dlp and are attacker-controlled: anyone
+            # can upload a video called "@everyone" and get it queued. Since the
+            # bot echoes titles back into messages, mentions must never be
+            # honoured no matter what ends up in the text.
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
     async def setup_hook(self) -> None:
         for extension in INITIAL_EXTENSIONS:

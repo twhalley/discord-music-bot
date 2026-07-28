@@ -7,18 +7,22 @@ requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "twhalley" }]
 dependencies = [
-    # The [voice] extra is load-bearing. discord.py 2.7 moved voice onto
-    # Discord's DAVE protocol, so connecting to a channel now needs `davey` in
-    # addition to PyNaCl. Without it the bot starts, logs in and syncs commands
-    # perfectly well, then every /play dies inside channel.connect() with
-    # "RuntimeError: davey library needed in order to use voice" -- the only
-    # hint at startup is a WARNING that is easy to read as advisory.
-    "discord.py[voice]==2.7.1",
-    # discord.py's voice extra requires PyNaCl<1.6. 1.6.2 was pinned here,
-    # outside that range: pip did not object because PyNaCl was named directly
-    # rather than resolved through the extra. Check that bound before bumping.
-    "PyNaCl==1.5.0",
+    "discord.py==2.7.1",
+    # Voice needs BOTH of these. discord.py 2.7 moved voice onto Discord's DAVE
+    # protocol, so `davey` is required alongside PyNaCl; without it the bot
+    # starts, logs in and syncs commands perfectly well, then every /play dies
+    # inside channel.connect() with "RuntimeError: davey library needed in
+    # order to use voice". The only startup hint is a WARNING easily read as
+    # advisory.
     "davey==0.1.6",
+    # Deliberately NOT installed via discord.py's [voice] extra, and
+    # deliberately newer than the PyNaCl<1.6 bound that extra declares.
+    # PyNaCl 1.5.0 carries PYSEC-2026-3002, fixed in 1.6.2 -- so the extra's
+    # bound and a clean `pip-audit` are mutually exclusive. discord.py's voice
+    # path uses only SecretBox, Aead and utils.random, all of which are present
+    # and working in 1.6.2 (verified, and asserted in tests/test_voice_deps.py).
+    # Revisit if discord.py starts using a wider slice of the PyNaCl API.
+    "PyNaCl==1.6.2",
     "yt-dlp==2026.7.4",
 ]
 

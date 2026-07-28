@@ -467,6 +467,73 @@ ssh -i ~/.ssh/musicbot-deploy musicbot@<PUBLIC_IP> \
 
 ---
 
+## PO token provider (optional)
+
+YouTube refuses some videos from datacenter IPs with *"Sign in to confirm you're
+not a bot"*. Satisfying that check needs a **proof-of-origin token**, produced by
+running YouTube's BotGuard challenge in a JS runtime. yt-dlp cannot do that
+itself, so a provider process does it and the plugin in the bot image
+(`bgutil-ytdlp-pot-provider`, already a dependency) asks it on demand.
+
+**This is optional.** Without it the bot runs exactly as before — a few videos
+refuse to play, everything else works. The bot unit uses `Wants=`, not
+`Requires=`, so a provider failure degrades playback rather than stopping the
+bot.
+
+It runs in a **separate container** on purpose: its entire job is executing a
+third party's obfuscated JS, which has no business sharing a process space with
+the Discord token. A podman **pod** gives both containers one network namespace,
+so the bot reaches it on `127.0.0.1:4416` without it ever binding to the VM's
+network interface.
+
+Set it up on the deploy account:
+
+```bash
+# Pin by digest, not tag. Resolve the digest for the version matching the
+# plugin pinned in pyproject.toml -- provider and plugin ship as a pair.
+podman pull docker.io/brainicism/bgutil-ytdlp-pot-provider:1.3.1
+DIGEST=$(podman inspect docker.io/brainicism/bgutil-ytdlp-pot-provider:1.3.1 \
+  --format '{{index .RepoDigests 0}}')
+umask 077
+printf 'MUSICBOT_POT_IMAGE=%s\n' "$DIGEST" > ~/.config/musicbot/pot-image
+
+# Install the two new units alongside musicbot.service, then enable them.
+systemctl --user daemon-reload
+systemctl --user enable --now musicbot-pod.service musicbot-pot.service
+systemctl --user restart musicbot.service
+```
+
+Confirm it is minting tokens:
+
+```bash
+podman exec musicbot-pot true && echo running
+curl -s -X POST http://127.0.0.1:4416/get_pot \
+  -H 'Content-Type: application/json' -d '{"content_binding":"dQw4w9WgXcQ"}'
+```
+
+A response containing `poToken` means it is working.
+
+### What this does and does not fix
+
+- **Fixes** "Sign in to confirm you're not a bot" for most videos.
+- **Does not fix** genuinely age-restricted videos. Those require an
+  age-verified account — i.e. cookies — and no token substitutes for that.
+- **Will break periodically.** When YouTube changes BotGuard, playback fails
+  until upstream ships a fix and you bump both the plugin and the image.
+
+### Maintenance
+
+⚠️ **Dependabot cannot see the image digest**, because it lives in a systemd
+unit's environment file rather than a Dockerfile. It will keep the *plugin*
+current via `pyproject.toml`; the **image digest must be bumped by hand** to
+match. Mismatched plugin and provider versions fail at token-fetch time.
+
+The provider is covered by the existing host egress rules without any change —
+those are scoped to the deploy account's uid, and this runs under the same
+account, so it cannot reach the metadata service or the VPC either.
+
+---
+
 ## Logs
 
 The container writes to the journal under the deploy account, so read them as

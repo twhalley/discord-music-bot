@@ -190,3 +190,32 @@ def test_friendly_errors_never_leak_the_original_text() -> None:
 def test_bare_word_needles_do_not_mislabel(raw: str) -> None:
     """Regression: a bare "age" needle matched webpage/message/package."""
     assert "age-restricted" not in source._friendly_error(RuntimeError(raw))
+
+
+def test_no_provider_configured_leaves_options_untouched(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The provider is optional: without it the bot behaves exactly as before."""
+    monkeypatch.delenv(source.POT_PROVIDER_ENV, raising=False)
+    assert source.extractor_args() == {}
+    assert "extractor_args" not in source.ytdl_options()
+
+
+def test_provider_is_wired_in_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(source.POT_PROVIDER_ENV, "http://127.0.0.1:4416")
+    args = source.extractor_args()
+    assert args == {"youtubepot-bgutilhttp": {"base_url": ["http://127.0.0.1:4416"]}}
+    assert source.ytdl_options()["extractor_args"] == args
+
+
+def test_blank_provider_url_is_treated_as_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An empty env var must not produce a broken base_url of ''."""
+    monkeypatch.setenv(source.POT_PROVIDER_ENV, "   ")
+    assert source.extractor_args() == {}
+
+
+def test_ytdl_options_does_not_mutate_the_shared_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each call must return a copy, or provider config would leak between runs."""
+    monkeypatch.setenv(source.POT_PROVIDER_ENV, "http://127.0.0.1:4416")
+    source.ytdl_options()
+    assert "extractor_args" not in source.YTDL_OPTIONS

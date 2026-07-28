@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Any, Protocol, cast
 
 from musicbot.audio.queue import Track
-from musicbot.util.urls import is_probable_url, normalize_query
+from musicbot.util.urls import is_allowed_host, is_probable_url, normalize_query
 
 # bestaudio, and we tell yt-dlp not to touch the filesystem.
 YTDL_OPTIONS: dict[str, Any] = {
@@ -45,11 +45,21 @@ class _Extractor(Protocol):
 
 
 def _build_query(raw: str) -> str:
-    """Normalize input and turn plain text into a YouTube search."""
+    """Normalize input and turn plain text into a YouTube search.
+
+    URLs are checked against :data:`musicbot.util.urls.ALLOWED_HOSTS` before
+    they can reach yt-dlp. Anything that is not a URL becomes a YouTube search
+    term, which is inert — a hostile string like ``file:///etc/passwd`` has no
+    ``http(s)://`` prefix, so it is searched for rather than fetched.
+    """
     query = normalize_query(raw)
     if not query:
         raise SourceError("Empty query.")
     if is_probable_url(query):
+        if not is_allowed_host(query):
+            raise SourceError(
+                "Only YouTube and SoundCloud links are supported. Try searching by name instead."
+            )
         return query
     return f"ytsearch1:{query}"
 

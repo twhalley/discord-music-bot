@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from musicbot.audio.queue import GuildQueue, Track
+from musicbot.audio.queue import MAX_QUEUE_SIZE, GuildQueue, QueueFullError, Track
 
 
 def make_track(title: str = "song", duration: int | None = 200) -> Track:
@@ -87,3 +87,30 @@ def test_clear_keeps_current_but_reset_wipes_it() -> None:
 )
 def test_duration_label(duration: int | None, expected: str) -> None:
     assert make_track(duration=duration).duration_label == expected
+
+
+def test_add_raises_when_queue_is_full() -> None:
+    q = GuildQueue(max_size=2)
+    q.add(make_track("a"))
+    q.add(make_track("b"))
+    assert q.is_full()
+    with pytest.raises(QueueFullError, match="full"):
+        q.add(make_track("c"))
+
+
+def test_popping_frees_space_in_a_full_queue() -> None:
+    q = GuildQueue(max_size=1)
+    q.add(make_track("a"))
+    assert q.is_full()
+    q.pop_next()
+    assert not q.is_full()
+    assert q.add(make_track("b")) == 1
+
+
+def test_default_max_size_is_applied() -> None:
+    assert GuildQueue().max_size == MAX_QUEUE_SIZE
+
+
+def test_rejects_nonsensical_max_size() -> None:
+    with pytest.raises(ValueError, match="at least 1"):
+        GuildQueue(max_size=0)

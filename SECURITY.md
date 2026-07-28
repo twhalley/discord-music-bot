@@ -24,6 +24,16 @@ This project is built to be safe to run unattended:
   not confer root on the VM.
 - **Authenticated deploys.** The deploy SSH connection pins the VM's host key
   fingerprint, so the token is never handed to an impostor host.
+- **No arbitrary outbound fetches.** `/play` takes free-form input from any
+  guild member, so URLs are checked against a host allowlist (YouTube and
+  SoundCloud) before reaching yt-dlp. Without it the bot is an SSRF primitive
+  able to reach internal addresses such as a cloud metadata service. Non-URL
+  input becomes a search term and is never fetched.
+- **Bounded per-guild resources.** Queues are capped and concurrent extractions
+  are limited, so a member cannot grow memory or exhaust the worker pool by
+  spamming commands.
+- **Every published architecture is scanned.** Trivy gates `amd64` *and*
+  `arm64`; the image the deployment target actually runs is not exempt.
 - **Pinned supply chain.** The base image is pinned by digest, all GitHub
   Actions are pinned by commit SHA, and Python dependencies are version-pinned.
 - **Automated scanning.** Every change runs CodeQL, `pip-audit`, and a Trivy

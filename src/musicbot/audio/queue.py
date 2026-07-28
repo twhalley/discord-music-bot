@@ -10,6 +10,15 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 
+# Any guild member can call /play, so an unbounded queue is a memory-growth
+# lever for anyone in the server. The cap is generous for real use and turns
+# spam into a polite refusal instead of a slow leak.
+MAX_QUEUE_SIZE = 100
+
+
+class QueueFullError(RuntimeError):
+    """Raised when a track is added to a queue that has reached its cap."""
+
 
 @dataclass(frozen=True, slots=True)
 class Track:
@@ -36,9 +45,21 @@ class Track:
 class GuildQueue:
     """A FIFO queue of tracks plus the currently-playing track for one guild."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_size: int = MAX_QUEUE_SIZE) -> None:
+        if max_size < 1:
+            raise ValueError("max_size must be at least 1")
         self._items: deque[Track] = deque()
         self._current: Track | None = None
+        self._max_size = max_size
+
+    @property
+    def max_size(self) -> int:
+        """The most tracks this queue will hold, excluding the current one."""
+        return self._max_size
+
+    def is_full(self) -> bool:
+        """True when no further tracks can be added."""
+        return len(self._items) >= self._max_size
 
     @property
     def current(self) -> Track | None:
@@ -53,7 +74,13 @@ class GuildQueue:
         return not self._items
 
     def add(self, track: Track) -> int:
-        """Append a track; return its 1-based position in the pending queue."""
+        """Append a track; return its 1-based position in the pending queue.
+
+        Raises:
+            QueueFullError: if the queue already holds ``max_size`` tracks.
+        """
+        if self.is_full():
+            raise QueueFullError(f"Queue is full ({self._max_size} tracks).")
         self._items.append(track)
         return len(self._items)
 

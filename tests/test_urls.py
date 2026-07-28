@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from musicbot.util.urls import is_probable_url, normalize_query, rewrite_embeds
+from musicbot.util.urls import (
+    is_allowed_host,
+    is_probable_url,
+    normalize_query,
+    rewrite_embeds,
+)
 
 
 @pytest.mark.parametrize(
@@ -51,3 +56,51 @@ def test_rewrite_embeds_skips_already_fixed_links() -> None:
 def test_rewrite_embeds_handles_multiple_links() -> None:
     result = rewrite_embeds("https://x.com/a and https://tiktok.com/@u/video/1")
     assert result == "https://fixupx.com/a and https://vxtiktok.com/@u/video/1"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://youtube.com/watch?v=x",
+        "https://www.youtube.com/watch?v=x",
+        "https://m.youtube.com/watch?v=x",
+        "https://music.youtube.com/watch?v=x",
+        "https://youtu.be/x",
+        "http://soundcloud.com/artist/track",
+        "https://on.soundcloud.com/abc",
+        "https://YouTube.COM/watch?v=x",  # host comparison is case-insensitive
+        "https://youtube.com./watch?v=x",  # trailing DNS root dot
+    ],
+)
+def test_is_allowed_host_accepts_supported_services(url: str) -> None:
+    assert is_allowed_host(url) is True
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # Cloud instance metadata — the SSRF target this guard exists for.
+        "http://169.254.169.254/opc/v2/instance/",
+        "http://127.0.0.1:8080/admin",
+        "http://localhost/",
+        "http://[::1]/",
+        "http://10.0.0.5/internal",
+        # Userinfo trick: the real host is the metadata service, not YouTube.
+        "https://youtube.com@169.254.169.254/",
+        "https://youtube.com:pass@169.254.169.254/",
+        # Suffix confusion: an attacker-controlled parent domain.
+        "https://youtube.com.evil.test/",
+        "https://notyoutube.com/",
+        "https://evil.test/?x=youtube.com",
+        # Non-http schemes never reach yt-dlp as URLs.
+        "file:///etc/passwd",
+        "ftp://youtube.com/x",
+        "gopher://youtube.com/",
+        # Malformed authority.
+        "https://[not-an-ipv6/",
+        "https:///nohost",
+        "",
+    ],
+)
+def test_is_allowed_host_rejects_everything_else(url: str) -> None:
+    assert is_allowed_host(url) is False

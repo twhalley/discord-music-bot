@@ -21,9 +21,30 @@ ALLOWED_HOSTS: frozenset[str] = frozenset(
     {
         "youtube.com",
         "youtu.be",
+        # Embed/privacy variant; people paste these from embedded players.
+        "youtube-nocookie.com",
         "soundcloud.com",
+        # SoundCloud's *share* links do not use soundcloud.com at all. The
+        # mobile app's Share button produces a Firebase dynamic link, and the
+        # web player offers a short domain. Omitting these made every shared
+        # SoundCloud track look unsupported.
+        "snd.sc",
+        "soundcloud.app.goo.gl",
     }
 )
+
+
+def host_of(url: str) -> str:
+    """Return the lowercased host of ``url``, or ``""`` if it has none.
+
+    Uses ``urlsplit().hostname``, so userinfo tricks resolve to the real host.
+    """
+    try:
+        host = urlsplit(url).hostname
+    except ValueError:
+        return ""
+    return (host or "").lower().rstrip(".")
+
 
 # Maps a source domain to its embed-friendly mirror. Kept here (rather than in a
 # cog) so the music bot and the future embed-fixer cog share one source of truth.
@@ -67,17 +88,12 @@ def is_allowed_host(url: str) -> bool:
     if parsed.scheme not in ("http", "https"):
         return False
 
-    try:
-        host = parsed.hostname
-    except ValueError:
-        return False
-
+    # Trailing dots denote the DNS root and would otherwise dodge the suffix
+    # check: "youtube.com." is the same host as "youtube.com".
+    host = host_of(url)
     if not host:
         return False
 
-    # Trailing dots denote the DNS root and would otherwise dodge the suffix
-    # check: "youtube.com." is the same host as "youtube.com".
-    host = host.lower().rstrip(".")
     return any(host == allowed or host.endswith(f".{allowed}") for allowed in ALLOWED_HOSTS)
 
 

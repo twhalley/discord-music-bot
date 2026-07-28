@@ -26,7 +26,18 @@ YTDL_OPTIONS: dict[str, Any] = {
     "source_address": "0.0.0.0",  # noqa: S104 - yt-dlp binds outbound to IPv4
     "skip_download": True,
     "cachedir": False,
+    # Extraction runs on a worker thread from a bounded pool. Without a timeout
+    # a host that accepts the connection then stalls would hold a thread
+    # indefinitely, and enough of those starve the pool.
+    "socket_timeout": 15,
+    # Never let a redirect chain wander; each hop is re-checked below anyway.
+    "extractor_retries": 1,
 }
+
+# Streams whose length we cannot bound are allowed (live radio reports no
+# duration), but a single absurdly long VOD would otherwise occupy the player
+# for the better part of a day.
+MAX_TRACK_SECONDS = 4 * 60 * 60
 
 # ffmpeg options: reconnect on transient network drops, and stream only audio.
 FFMPEG_BEFORE_OPTIONS = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin"
@@ -80,11 +91,25 @@ def build_track(info: dict[str, Any], requested_by: int) -> Track:
     if not stream_url:
         raise SourceError("yt-dlp returned no streamable URL for this query.")
 
+    # The stream URL is handed to ffmpeg as a command-line argument. yt-dlp
+    # normally returns an https media URL, but the value ultimately derives
+    # from a remote response, so it is validated rather than trusted: a value
+    # beginning with "-" would be parsed by ffmpeg as an option, and a non-http
+    # scheme (file://, concat:, ...) would make it read something local.
+    if not is_probable_url(stream_url):
+        raise SourceError("yt-dlp returned a stream URL that is not http(s).")
+
+    duration = info.get("duration")
+    if isinstance(duration, int | float) and duration > MAX_TRACK_SECONDS:
+        raise SourceError(
+            f"That track is longer than {MAX_TRACK_SECONDS // 3600} hours. Pick something shorter."
+        )
+
     return Track(
         title=info.get("title") or "Unknown title",
         stream_url=stream_url,
         webpage_url=info.get("webpage_url") or info.get("original_url") or stream_url,
-        duration=info.get("duration"),
+        duration=duration,
         requested_by=requested_by,
     )
 

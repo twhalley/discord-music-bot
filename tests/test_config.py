@@ -39,3 +39,26 @@ def test_config_is_immutable() -> None:
     cfg = Config.from_env({"DISCORD_BOT_TOKEN": "abc"})
     with pytest.raises((AttributeError, TypeError)):
         cfg.token = "changed"  # type: ignore[misc]
+
+
+def test_guild_allowlist_defaults_to_permitting_everything() -> None:
+    cfg = Config.from_env({"DISCORD_BOT_TOKEN": "abc"})
+    assert cfg.allowed_guild_ids == frozenset()
+    assert cfg.is_guild_allowed(12345) is True
+
+
+def test_guild_allowlist_restricts_when_set() -> None:
+    cfg = Config.from_env({"DISCORD_BOT_TOKEN": "abc", "ALLOWED_GUILD_IDS": "111, 222"})
+    assert cfg.allowed_guild_ids == frozenset({111, 222})
+    assert cfg.is_guild_allowed(111) is True
+    assert cfg.is_guild_allowed(333) is False
+
+
+def test_guild_allowlist_tolerates_untidy_input() -> None:
+    cfg = Config.from_env({"DISCORD_BOT_TOKEN": "abc", "ALLOWED_GUILD_IDS": " 111 ,, 222 ,"})
+    assert cfg.allowed_guild_ids == frozenset({111, 222})
+
+
+def test_guild_allowlist_rejects_non_integers() -> None:
+    with pytest.raises(ConfigError, match="ALLOWED_GUILD_IDS"):
+        Config.from_env({"DISCORD_BOT_TOKEN": "abc", "ALLOWED_GUILD_IDS": "111,nope"})

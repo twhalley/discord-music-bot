@@ -308,6 +308,58 @@ Persist it across reboots with a oneshot unit (`ExecStart=/usr/sbin/nft -f
 begins with `flush ruleset` and would drop Oracle's rules — including the one
 permitting inbound SSH.
 
+### Host hardening (recommended)
+
+**SSH.** A drop-in leaves the vendor config untouched and reverts by deleting
+one file. On Ubuntu, `sshd_config` includes `sshd_config.d/*.conf` at the top
+and *first value wins*, so check for an existing lower-numbered drop-in
+(`60-cloudimg-settings.conf`) before assuming yours takes effect:
+
+```bash
+sudo tee /etc/ssh/sshd_config.d/99-musicbot-hardening.conf >/dev/null <<'EOF'
+AllowUsers ubuntu musicbot
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+MaxAuthTries 3
+LoginGraceTime 30
+AllowTcpForwarding no
+X11Forwarding no
+AllowAgentForwarding no
+PermitTunnel no
+ClientAliveInterval 300
+ClientAliveCountMax 2
+EOF
+sudo sshd -t && sudo systemctl reload ssh
+```
+
+⚠️ **Validate with `sshd -t` before reloading, and test a *new* connection
+before closing your current one.** A reload does not drop existing sessions, so
+an open shell is your way back from a mistake.
+
+**Journal size.** The bot logs a line per track, so an unbounded journal is a
+slow path to a full boot volume — which takes the bot down:
+
+```bash
+sudo mkdir -p /etc/systemd/journald.conf.d
+sudo tee /etc/systemd/journald.conf.d/99-musicbot.conf >/dev/null <<'EOF'
+[Journal]
+SystemMaxUse=500M
+SystemKeepFree=2G
+MaxRetentionSec=1month
+EOF
+sudo systemctl restart systemd-journald
+```
+
+**Security updates.** `unattended-upgrades` is enabled by default on Ubuntu
+cloud images, but a freshly created VM can still carry a backlog it hasn't
+processed yet. Apply it once at setup and reboot if asked:
+
+```bash
+sudo apt-get update && sudo apt-get -y upgrade
+[ -f /var/run/reboot-required ] && sudo systemctl reboot
+```
+
 Finally, capture the host key fingerprint for the `SSH_HOST_FINGERPRINT` secret.
 Run this **from your laptop**, not the VM:
 

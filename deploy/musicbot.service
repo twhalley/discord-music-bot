@@ -34,7 +34,7 @@ ExecStart=/usr/bin/podman run \
     --rm \
     --name musicbot \
     --read-only \
-    --tmpfs /tmp:rw,size=64m,mode=1777 \
+    --tmpfs /tmp:rw,size=64m,mode=1777,noexec,nosuid,nodev \
     --cap-drop=ALL \
     --security-opt=no-new-privileges \
     --pids-limit=256 \

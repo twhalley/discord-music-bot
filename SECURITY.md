@@ -39,9 +39,24 @@ This project is built to be safe to run unattended:
   SoundCloud) before reaching yt-dlp. Without it the bot is an SSRF primitive
   able to reach internal addresses such as a cloud metadata service. Non-URL
   input becomes a search term and is never fetched.
-- **Bounded per-guild resources.** Queues are capped and concurrent extractions
-  are limited, so a member cannot grow memory or exhaust the worker pool by
-  spamming commands.
+- **Untrusted values are validated, not trusted.** The stream URL yt-dlp returns
+  becomes an `ffmpeg` argument, so it is checked to be `http(s)` — a value
+  starting with `-` would be read as an option, and `file://` or `concat:`
+  would make ffmpeg read something local. Track titles are markdown-escaped for
+  display, mentions are disabled client-side, and titles are flattened before
+  logging so newlines cannot forge log records.
+- **Bounded per-guild resources.** Queues are capped, concurrent extractions are
+  limited, per-user command cooldowns apply, yt-dlp has a socket timeout so a
+  stalled host cannot hold a worker thread, and absurdly long tracks are
+  refused. The bot disconnects once the last human leaves the channel rather
+  than holding a voice connection and ffmpeg process indefinitely.
+- **Optional guild allowlist.** `ALLOWED_GUILD_IDS` bounds the blast radius if
+  an invite link leaks: the bot leaves any guild not on the list, both on join
+  and on startup.
+- **Hardened host access.** SSH is key-only and restricted to the two accounts
+  that need it, with root login disabled, forwarding of every kind refused, and
+  reduced auth attempts and grace time. The journal is size-capped so logging
+  cannot fill the boot volume, and unattended security upgrades are enabled.
 - **Every published architecture is scanned.** Trivy gates `amd64` *and*
   `arm64`; the image the deployment target actually runs is not exempt.
 - **Pinned supply chain.** The base image is pinned by digest, all GitHub
@@ -49,7 +64,27 @@ This project is built to be safe to run unattended:
 - **Automated scanning.** Every change runs CodeQL, `pip-audit`, and a Trivy
   image scan (failing on HIGH/CRITICAL). Dependabot keeps everything current.
 - **Deliberate deploys.** Deployment is a manual, environment-gated workflow
-  that can require reviewer approval.
+  that can require reviewer approval. CI jobs check out without persisting the
+  job token, carry timeouts, and the deploy discards its registry credential
+  and prunes superseded images once the service is up.
+
+## Known limitations
+
+Stated plainly rather than left implied:
+
+- **The admin account is root-capable.** Ubuntu cloud images grant the default
+  login account passwordless `sudo`. That account is for administration; the
+  deploy key deliberately lives elsewhere. Anyone holding the *admin* key holds
+  the machine.
+- **`:latest` is a mutable tag.** The deploy workflow accepts an explicit tag,
+  and `type=sha` tags are published, so pin one for a reproducible deploy.
+- **Scanned and pushed images are separate builds.** They share a context and
+  cache so they are the same in practice, but the pushed digest is not verified
+  against the scanned one. Attestations are published (`provenance`, `sbom`)
+  but not checked at deploy time.
+- **Redirects are handled at the network layer, not the application one.** The
+  host allowlist cannot see past an open redirect on an allowed host; the
+  firewall rule is what actually contains that.
 
 ## A note on usage
 

@@ -60,6 +60,21 @@ class MusicBot(commands.Bot):
             await self.tree.sync()
             log.info("Synced global commands")
 
+    async def _leave_if_not_allowed(self, guild: discord.Guild) -> bool:
+        """Leave ``guild`` if an allowlist is configured and excludes it."""
+        if self.config.is_guild_allowed(guild.id):
+            return False
+        log.warning("Leaving guild %s: not in ALLOWED_GUILD_IDS", guild.id)
+        await guild.leave()
+        return True
+
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        await self._leave_if_not_allowed(guild)
+
     async def on_ready(self) -> None:
         if self.user is not None:
             log.info("Logged in as %s (id=%s)", self.user, self.user.id)
+        # Also sweep on startup: the bot may have been added while offline, or
+        # the allowlist may have been tightened since the last run.
+        for guild in list(self.guilds):
+            await self._leave_if_not_allowed(guild)

@@ -25,6 +25,7 @@ jobs:
   deploy:
     name: Deploy to Oracle VM
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment: production
     steps:
       - name: Deploy over SSH
@@ -64,11 +65,20 @@ jobs:
               | podman login ghcr.io -u "${GHCR_USER}" --password-stdin
             podman pull "${IMAGE}"
 
+            # The registry credential has served its purpose; don't leave it on
+            # disk in the service account's auth.json.
+            podman logout ghcr.io >/dev/null 2>&1 || true
+
             # Point the user unit at the freshly pulled tag and restart it.
             printf 'MUSICBOT_IMAGE=%s\n' "${IMAGE}" \
               > "${HOME}/.config/musicbot/image"
             systemctl --user restart musicbot.service
             systemctl --user --no-pager status musicbot.service | head -n 10
+
+            # Every deploy leaves the previous image behind. Unchecked that
+            # fills the boot volume and takes the bot down months from now.
+            # Runs last so a prune failure cannot fail an otherwise good deploy.
+            podman image prune -f >/dev/null 2>&1 || true
         env:
           IMAGE_REPO: ghcr.io/${{ github.repository }}
           IMAGE_TAG: ${{ github.event.inputs.tag }}

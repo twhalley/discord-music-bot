@@ -112,3 +112,36 @@ def test_hostile_non_url_text_is_searched_not_fetched() -> None:
     fake = FakeExtractor(VIDEO_INFO)
     source.resolve("file:///etc/passwd", requested_by=1, extractor=fake)
     assert fake.seen_query == "ytsearch1:file:///etc/passwd"
+
+
+@pytest.mark.parametrize(
+    "stream_url",
+    [
+        "-i /etc/passwd",  # would be read by ffmpeg as an option, not a URL
+        "file:///etc/passwd",
+        "concat:/etc/passwd",
+        "",
+    ],
+)
+def test_build_track_rejects_non_http_stream_urls(stream_url: str) -> None:
+    """The stream URL becomes an ffmpeg argument, so it is validated not trusted."""
+    info = {"title": "x", "url": stream_url}
+    with pytest.raises(source.SourceError):
+        source.build_track(info, requested_by=1)
+
+
+def test_build_track_rejects_absurdly_long_tracks() -> None:
+    info = {"title": "x", "url": "https://cdn.example/a", "duration": source.MAX_TRACK_SECONDS + 1}
+    with pytest.raises(source.SourceError, match="longer than"):
+        source.build_track(info, requested_by=1)
+
+
+def test_build_track_allows_live_streams_with_no_duration() -> None:
+    """Live radio reports no duration; that must stay playable."""
+    info = {"title": "x", "url": "https://cdn.example/a", "duration": None}
+    assert source.build_track(info, requested_by=1).duration is None
+
+
+def test_ytdl_options_bound_socket_time() -> None:
+    """A stalled host must not hold a pool thread indefinitely."""
+    assert source.YTDL_OPTIONS["socket_timeout"] > 0

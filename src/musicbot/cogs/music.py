@@ -26,6 +26,17 @@ log = logging.getLogger(__name__)
 MAX_CONCURRENT_RESOLUTIONS = 4
 
 
+def _display(title: str) -> str:
+    """Escape a track title for safe inclusion in a Discord message.
+
+    Titles come from yt-dlp and are chosen by whoever uploaded the media, so
+    they are untrusted text. `AllowedMentions.none()` on the client already
+    stops mentions resolving; this additionally stops markdown in a title from
+    forging formatting or fake links in the bot's own output.
+    """
+    return discord.utils.escape_markdown(title)
+
+
 class Music(commands.Cog):
     """Voice playback commands."""
 
@@ -136,12 +147,13 @@ class Music(commands.Cog):
 
         if client.is_playing() or client.is_paused():
             await interaction.followup.send(
-                f"Queued **{track.title}** (`{track.duration_label}`) — position {position}."
+                f"Queued **{_display(track.title)}** (`{track.duration_label}`)"
+                f" — position {position}."
             )
         else:
             self._play_next(guild.id, client)
             await interaction.followup.send(
-                f"Now playing **{track.title}** (`{track.duration_label}`)."
+                f"Now playing **{_display(track.title)}** (`{track.duration_label}`)."
             )
 
     @app_commands.command(description="Skip the current track.")
@@ -194,7 +206,8 @@ class Music(commands.Cog):
             await interaction.response.send_message("Nothing is playing.", ephemeral=True)
             return
         await interaction.response.send_message(
-            f"Now playing **{current.title}** (`{current.duration_label}`)\n{current.webpage_url}"
+            f"Now playing **{_display(current.title)}** (`{current.duration_label}`)\n"
+            f"<{current.webpage_url}>"
         )
 
     @app_commands.command(description="Show the upcoming queue.")
@@ -207,7 +220,8 @@ class Music(commands.Cog):
             await interaction.response.send_message("The queue is empty.", ephemeral=True)
             return
         lines = [
-            f"{i}. **{t.title}** (`{t.duration_label}`)" for i, t in enumerate(upcoming, start=1)
+            f"{i}. **{_display(t.title)}** (`{t.duration_label}`)"
+            for i, t in enumerate(upcoming, start=1)
         ]
         await interaction.response.send_message("\n".join(lines))
 

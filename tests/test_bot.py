@@ -13,6 +13,7 @@ import pytest
 
 from musicbot import __main__ as entrypoint
 from musicbot.bot import INITIAL_EXTENSIONS, MusicBot, build_intents
+from musicbot.cogs.music import _display
 from musicbot.config import Config
 
 
@@ -64,3 +65,34 @@ def test_main_starts_the_bot_with_the_configured_token(
     assert started["token"] == "fake-token"
     # discord.py installs its own handlers; main must not fight it.
     assert started["log_handler"] is None
+
+
+def test_client_never_honours_mentions_from_untrusted_text() -> None:
+    """Track titles reach Discord messages, so mentions must never resolve."""
+    bot = MusicBot(Config(token="t", log_level="INFO", dev_guild_id=None))
+    assert bot.allowed_mentions.everyone is False
+    assert bot.allowed_mentions.users is False
+    assert bot.allowed_mentions.roles is False
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("**bold**", r"\*\*bold\*\*"),
+        ("_it_", r"\_it\_"),
+        ("`code`", r"\`code\`"),
+        ("a|b", r"a\|b"),
+        ("plain title", "plain title"),
+    ],
+)
+def test_display_escapes_markdown_in_untrusted_titles(title: str, expected: str) -> None:
+    assert _display(title) == expected
+
+
+def test_display_leaves_mention_text_intact() -> None:
+    """escape_markdown does not neuter mentions -- AllowedMentions.none() does.
+
+    Pinned so nobody later removes the client-level guard believing escaping
+    covers it.
+    """
+    assert _display("@everyone") == "@everyone"

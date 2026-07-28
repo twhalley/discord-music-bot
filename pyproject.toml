@@ -66,10 +66,12 @@ addopts = "--cov=musicbot --cov-report=term-missing --cov-fail-under=80"
 [tool.coverage.run]
 source = ["musicbot"]
 branch = true
-# Exclude the thin Discord I/O glue that requires a live gateway/voice connection
-# to exercise; the pure logic it drives (queue, source, config, urls) is covered.
+# Only the cog is excluded: driving it needs a live gateway and voice client.
+# Everything it delegates to — queue, source, config, urls — is covered, as are
+# intent selection and the entrypoint wiring in bot.py/__main__.py.
+#
+# Note this means the command handlers themselves are unmeasured, so the figure
+# below describes the logic behind the commands, not the Discord surface.
 omit = [
-    "src/musicbot/__main__.py",
-    "src/musicbot/bot.py",
     "src/musicbot/cogs/*",
 ]

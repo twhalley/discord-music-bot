@@ -15,9 +15,15 @@ from discord import app_commands
 from discord.ext import commands
 
 from musicbot.audio import source
-from musicbot.audio.queue import GuildQueue, Track
+from musicbot.audio.queue import GuildQueue, QueueFullError, Track
 
 log = logging.getLogger(__name__)
+
+# yt-dlp extraction is blocking network I/O run on a worker thread. Without a
+# bound, every concurrent /play across every guild spawns another thread, so a
+# handful of users can exhaust the thread pool. Resolutions beyond this many
+# simply wait their turn.
+MAX_CONCURRENT_RESOLUTIONS = 4
 
 
 class Music(commands.Cog):
@@ -26,6 +32,7 @@ class Music(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self._queues: dict[int, GuildQueue] = {}
+        self._resolve_limit = asyncio.Semaphore(MAX_CONCURRENT_RESOLUTIONS)
 
     def _queue_for(self, guild_id: int) -> GuildQueue:
         return self._queues.setdefault(guild_id, GuildQueue())
@@ -94,10 +101,22 @@ class Music(commands.Cog):
         if guild is None:  # unreachable once _ensure_voice succeeds, but narrows the type
             return
 
+        queue = self._queue_for(guild.id)
+        # Check before doing the expensive extraction, so a full queue costs a
+        # rejected message rather than a wasted network round-trip.
+        if queue.is_full():
+            await interaction.response.send_message(
+                f"The queue is full ({queue.max_size} tracks). Try again once it drains.",
+                ephemeral=True,
+            )
+            return
+
         await interaction.response.defer(thinking=True)
         try:
-            # yt-dlp extraction is blocking network I/O; keep the event loop free.
-            track = await asyncio.to_thread(source.resolve, query, interaction.user.id)
+            # yt-dlp extraction is blocking network I/O; keep the event loop
+            # free, and cap how many can be in flight at once.
+            async with self._resolve_limit:
+                track = await asyncio.to_thread(source.resolve, query, interaction.user.id)
         except source.SourceError as exc:
             await interaction.followup.send(f"Couldn't play that: {exc}")
             return
@@ -106,15 +125,20 @@ class Music(commands.Cog):
             await interaction.followup.send("Something went wrong resolving that link.")
             return
 
-        queue = self._queue_for(guild.id)
+        try:
+            position = queue.add(track)
+        except QueueFullError:
+            # The queue can fill while we were resolving.
+            await interaction.followup.send(
+                f"The queue filled up while loading that ({queue.max_size} tracks)."
+            )
+            return
 
         if client.is_playing() or client.is_paused():
-            position = queue.add(track)
             await interaction.followup.send(
                 f"Queued **{track.title}** (`{track.duration_label}`) — position {position}."
             )
         else:
-            queue.add(track)
             self._play_next(guild.id, client)
             await interaction.followup.send(
                 f"Now playing **{track.title}** (`{track.duration_label}`)."

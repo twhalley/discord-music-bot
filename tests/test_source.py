@@ -70,8 +70,8 @@ def test_resolve_wraps_plain_text_as_search() -> None:
 
 def test_resolve_strips_angle_brackets_before_search_detection() -> None:
     fake = FakeExtractor(VIDEO_INFO)
-    source.resolve("<https://x.com/a>", requested_by=1, extractor=fake)
-    assert fake.seen_query == "https://x.com/a"
+    source.resolve("<https://youtube.com/watch?v=a>", requested_by=1, extractor=fake)
+    assert fake.seen_query == "https://youtube.com/watch?v=a"
 
 
 def test_resolve_raises_on_empty_query() -> None:
@@ -82,3 +82,33 @@ def test_resolve_raises_on_empty_query() -> None:
 def test_extract_info_raises_when_extractor_returns_none() -> None:
     with pytest.raises(source.SourceError, match="No results"):
         source.extract_info("ytsearch1:nothing", extractor=FakeExtractor(None))
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://169.254.169.254/opc/v2/instance/",
+        "https://youtube.com@169.254.169.254/",
+        "http://127.0.0.1/admin",
+        "https://youtube.com.evil.test/",
+    ],
+)
+def test_resolve_refuses_disallowed_urls_without_calling_extractor(url: str) -> None:
+    """The SSRF guard must reject before yt-dlp is ever invoked."""
+    fake = FakeExtractor(VIDEO_INFO)
+    with pytest.raises(source.SourceError, match="Only YouTube and SoundCloud"):
+        source.resolve(url, requested_by=1, extractor=fake)
+    assert fake.seen_query is None
+
+
+def test_resolve_accepts_allowed_url_hosts() -> None:
+    fake = FakeExtractor(VIDEO_INFO)
+    source.resolve("https://m.youtube.com/watch?v=abc", requested_by=1, extractor=fake)
+    assert fake.seen_query == "https://m.youtube.com/watch?v=abc"
+
+
+def test_hostile_non_url_text_is_searched_not_fetched() -> None:
+    """Without an http(s) prefix the input is inert search text."""
+    fake = FakeExtractor(VIDEO_INFO)
+    source.resolve("file:///etc/passwd", requested_by=1, extractor=fake)
+    assert fake.seen_query == "ytsearch1:file:///etc/passwd"

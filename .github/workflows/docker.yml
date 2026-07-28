@@ -51,22 +51,25 @@ jobs:
             type=ref,event=tag
             type=sha,format=long
 
-      # Build once for scanning (load into the local daemon, amd64 only).
-      - name: Build image for scan
+      # Scan every architecture we publish. `load: true` can only materialise
+      # one platform at a time, so each is built and scanned in turn. Skipping
+      # arm64 here would leave the image the Oracle VM actually runs unscanned.
+      - name: Build amd64 image for scan
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           load: true
-          tags: ${{ env.IMAGE }}:scan
+          platforms: linux/amd64
+          tags: ${{ env.IMAGE }}:scan-amd64
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Trivy vulnerability scan (fail on HIGH/CRITICAL)
+      - name: Trivy scan amd64 (fail on HIGH/CRITICAL)
         uses: aquasecurity/trivy-action@c07df6fec6fa692e6fd1200d50aaa1fdd66f03c8 # master
         with:
-          image-ref: ${{ env.IMAGE }}:scan
+          image-ref: ${{ env.IMAGE }}:scan-amd64
           format: sarif
-          output: trivy.sarif
+          output: trivy-amd64.sarif
           severity: HIGH,CRITICAL
           exit-code: "1"
           ignore-unfixed: true
@@ -79,11 +82,45 @@ jobs:
           # fake "secrets"; our real secrets are injected from the env at runtime.
           scanners: vuln
 
-      - name: Upload Trivy results to the Security tab
+      - name: Upload amd64 Trivy results to the Security tab
         if: always()
         uses: github/codeql-action/upload-sarif@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4.37.0
         with:
-          sarif_file: trivy.sarif
+          sarif_file: trivy-amd64.sarif
+          # Distinct categories keep the two architectures' findings from
+          # overwriting each other in the Security tab.
+          category: trivy-amd64
+
+      # arm64 is what the Oracle Ampere VM runs, so it gets the same gate.
+      # Built under QEMU emulation, hence slower than the amd64 pass.
+      - name: Build arm64 image for scan
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          load: true
+          platforms: linux/arm64
+          tags: ${{ env.IMAGE }}:scan-arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Trivy scan arm64 (fail on HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@c07df6fec6fa692e6fd1200d50aaa1fdd66f03c8 # master
+        with:
+          image-ref: ${{ env.IMAGE }}:scan-arm64
+          format: sarif
+          output: trivy-arm64.sarif
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+          limit-severities-for-sarif: true
+          scanners: vuln
+
+      - name: Upload arm64 Trivy results to the Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4.37.0
+        with:
+          sarif_file: trivy-arm64.sarif
+          category: trivy-arm64
 
       # Only publish the multi-arch image after the scan passes.
       - name: Build & push (amd64 + arm64)

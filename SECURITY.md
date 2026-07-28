@@ -19,12 +19,13 @@ This project is built to be safe to run unattended:
   is git-ignored.
 - **Hardened container.** Read-only root filesystem, `--cap-drop=ALL`,
   `--security-opt=no-new-privileges`, non-root user, memory and PID limits.
-- **Rootless on the host.** The container runs under a systemd *user* unit and
-  nothing in the deploy path invokes `sudo`, so the published image never runs
-  with host privileges. Note that Ubuntu cloud images grant the default login
-  account passwordless `sudo`, so the deploy key still carries administrative
-  access to the VM; running the bot under a dedicated account without sudo
-  rights would close that remaining gap.
+- **Rootless on the host, under a dedicated account.** The container runs as a
+  systemd *user* unit owned by a `musicbot` service account that holds the
+  deploy key, is in no `sudo` group and has its password locked. Nothing in the
+  deploy path invokes `sudo`. This matters because Ubuntu cloud images grant the
+  *default* login account passwordless `sudo` — keeping the deploy key off that
+  account is what stops it being a root credential. Administration stays on the
+  separate default account.
 - **Network egress is restricted.** yt-dlp follows redirects, so an open
   redirect on an allowed host could otherwise bounce a request onto the VPC or
   the instance metadata service. Host firewall rules deny the bot's uid

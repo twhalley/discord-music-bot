@@ -14,7 +14,7 @@ from typing import Any
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from musicbot.audio import source
 from musicbot.audio.queue import GuildQueue, QueueFullError, Track
@@ -40,11 +40,17 @@ CONTROL_COOLDOWN_PER = 60.0
 # busy server. Long enough to read, short enough not to become the channel.
 MESSAGE_CLEANUP_SECONDS = 60.0
 
-# How long to wait after the queue drains before leaving the channel. Not zero:
-# a /play issued just as the last track ends spends a few seconds in yt-dlp, and
-# disconnecting underneath it would drop the track the user just asked for. The
-# state is re-checked after the wait, so queueing anything cancels the departure.
+# How long a voice connection may sit idle -- nothing playing, nothing queued --
+# before the bot leaves. Not zero: a /play issued just as a track ends spends a
+# few seconds in yt-dlp before anything reaches the queue, and leaving underneath
+# it would drop the track the user just asked for.
 IDLE_DISCONNECT_SECONDS = 20.0
+
+# How often idleness is re-evaluated. A watchdog rather than a timer scheduled
+# at the end of playback, because "finished the queue" is only one of the ways
+# the bot ends up connected with nothing to do -- a failed extraction leaves it
+# connected too, and that path never reaches the player loop at all.
+IDLE_CHECK_SECONDS = 10.0
 
 
 def _display(title: str) -> str:
@@ -75,9 +81,58 @@ class Music(commands.Cog):
         self.bot = bot
         self._queues: dict[int, GuildQueue] = {}
         self._resolve_limit = asyncio.Semaphore(MAX_CONCURRENT_RESOLUTIONS)
+        # guild id -> loop timestamp at which it was first seen idle.
+        self._idle_since: dict[int, float] = {}
+
+    async def cog_load(self) -> None:
+        self._idle_watchdog.start()
+
+    async def cog_unload(self) -> None:
+        self._idle_watchdog.cancel()
 
     def _queue_for(self, guild_id: int) -> GuildQueue:
         return self._queues.setdefault(guild_id, GuildQueue())
+
+    @tasks.loop(seconds=IDLE_CHECK_SECONDS)
+    async def _idle_watchdog(self) -> None:
+        """Leave any voice channel the bot has been sitting in with nothing to do.
+
+        Deliberately a poll over the live voice clients rather than a timer
+        armed when playback ends. Finishing the queue is only *one* way to end
+        up connected and idle: a failed extraction leaves the bot in the
+        channel without the player loop ever running, and so did every other
+        early return after joining. Checking observable state catches all of
+        them, including whichever one gets added next.
+        """
+        now = asyncio.get_running_loop().time()
+
+        for client in list(self.bot.voice_clients):
+            if not isinstance(client, discord.VoiceClient) or not client.is_connected():
+                continue
+
+            guild_id = client.guild.id
+            busy = (
+                client.is_playing()
+                or client.is_paused()
+                or not self._queue_for(guild_id).is_empty()
+            )
+            if busy:
+                self._idle_since.pop(guild_id, None)
+                continue
+
+            first_seen = self._idle_since.setdefault(guild_id, now)
+            if now - first_seen < IDLE_DISCONNECT_SECONDS:
+                continue
+
+            log.info("Idle in guild %s; leaving the channel", guild_id)
+            self._idle_since.pop(guild_id, None)
+            self._queue_for(guild_id).reset()
+            with contextlib.suppress(Exception):
+                await client.disconnect()
+
+    @_idle_watchdog.before_loop
+    async def _before_idle_watchdog(self) -> None:
+        await self.bot.wait_until_ready()
 
     async def cog_app_command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
@@ -197,8 +252,8 @@ class Music(commands.Cog):
         queue = self._queue_for(guild_id)
         track = queue.pop_next()
         if track is None:
-            # Nothing left to play: leave rather than sit idle in the channel.
-            self.bot.loop.create_task(self._leave_when_idle(guild_id, client))
+            # Nothing left to play. The idle watchdog handles leaving, so that
+            # this path and the failed-extraction path behave identically.
             return
 
         try:
@@ -221,27 +276,6 @@ class Music(commands.Cog):
 
         client.play(audio, after=_after)
         log.info("Now playing in guild %s: %s", guild_id, _for_log(track.title))
-
-    async def _leave_when_idle(self, guild_id: int, client: discord.VoiceClient) -> None:
-        """Disconnect once the queue has drained and stayed drained.
-
-        Called when playback finds nothing left to play. The wait exists so a
-        `/play` issued as the previous track ends -- which spends a few seconds
-        in yt-dlp before anything is queued -- is not cut off mid-resolution;
-        the state is re-checked afterwards, so queueing anything cancels this.
-        """
-        await asyncio.sleep(IDLE_DISCONNECT_SECONDS)
-
-        if not client.is_connected():
-            return
-        if client.is_playing() or client.is_paused():
-            return
-        if not self._queue_for(guild_id).is_empty():
-            return
-
-        log.info("Queue empty in guild %s; leaving the channel", guild_id)
-        self._queue_for(guild_id).reset()
-        await client.disconnect()
 
     # --- commands ----------------------------------------------------------
 

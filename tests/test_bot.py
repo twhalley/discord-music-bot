@@ -135,3 +135,25 @@ def test_bot_replies_are_cleaned_up_not_left_in_the_channel() -> None:
     # A central listener, so a newly added command cannot forget to tidy up.
     assert hasattr(Music, "on_app_command_completion")
     assert hasattr(Music, "_delete_reply_later")
+
+
+def test_idle_disconnect_is_a_watchdog_not_a_one_shot_timer() -> None:
+    """Regression: the bot stayed in the channel after a failed extraction.
+
+    The old design armed a timer only when the player loop found an empty
+    queue, so any path that connected and then bailed — a refused URL, a
+    YouTube sign-in wall — never scheduled a departure. A poll over observable
+    state covers every such path, including ones added later.
+    """
+    from musicbot.cogs.music import (
+        IDLE_CHECK_SECONDS,
+        IDLE_DISCONNECT_SECONDS,
+        Music,
+    )
+
+    assert hasattr(Music, "_idle_watchdog")
+    assert not hasattr(Music, "_leave_when_idle"), "old one-shot timer should be gone"
+    assert 0 < IDLE_CHECK_SECONDS <= IDLE_DISCONNECT_SECONDS
+    # cog_load/cog_unload must start and stop it, or it never runs / leaks.
+    assert hasattr(Music, "cog_load")
+    assert hasattr(Music, "cog_unload")

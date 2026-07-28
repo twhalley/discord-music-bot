@@ -337,6 +337,41 @@ sudo sshd -t && sudo systemctl reload ssh
 before closing your current one.** A reload does not drop existing sessions, so
 an open shell is your way back from a mistake.
 
+**Offer exactly one host key.** This is not optional if you pin
+`SSH_HOST_FINGERPRINT` — and it is the single most likely reason a first deploy
+fails:
+
+```bash
+sudo tee -a /etc/ssh/sshd_config.d/99-musicbot-hardening.conf >/dev/null <<'EOF'
+HostKey /etc/ssh/ssh_host_ed25519_key
+HostKeyAlgorithms ssh-ed25519
+EOF
+sudo sshd -t && sudo systemctl reload ssh
+```
+
+By default sshd offers **three** host keys (RSA, ECDSA, ed25519) and the client
+picks by its own algorithm preference. `ssh-keyscan -t ed25519` gives you the
+ed25519 fingerprint, but the Go SSH client inside `appleboy/ssh-action` may
+negotiate a different one — and the deploy fails with:
+
+```
+ssh: handshake failed: ssh: host key fingerprint mismatch
+```
+
+That message reads like a wrong secret, which sends you re-checking the
+fingerprint you captured. The fingerprint was right; the server was answering
+with a different key. Constraining the server makes the pin deterministic and
+drops the weaker host key types. Confirm afterwards:
+
+```bash
+for t in ed25519 rsa ecdsa; do
+  echo "$t: $(ssh-keyscan -t $t <PUBLIC_IP> 2>/dev/null | ssh-keygen -lf - 2>/dev/null | awk '{print $2}')"
+done
+```
+
+Only `ed25519` should return a fingerprint, and it must equal
+`SSH_HOST_FINGERPRINT`.
+
 **Journal size.** The bot logs a line per track, so an unbounded journal is a
 slow path to a full boot volume — which takes the bot down:
 
@@ -429,6 +464,45 @@ Verify it came up:
 ssh -i ~/.ssh/musicbot-deploy musicbot@<PUBLIC_IP> \
   'systemctl --user --no-pager status musicbot.service'
 ```
+
+---
+
+## Logs
+
+The container writes to the journal under the deploy account, so read them as
+`musicbot` (not with `sudo`, and not as `ubuntu` — a user unit's journal belongs
+to that user):
+
+```bash
+ssh -i ~/.ssh/musicbot-deploy musicbot@<PUBLIC_IP>
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+
+journalctl --user -u musicbot.service -f          # follow
+journalctl --user -u musicbot.service -n 100      # last 100 lines
+journalctl --user -u musicbot.service -p err      # errors only
+journalctl --user -u musicbot.service --since '1 hour ago'
+```
+
+`podman logs musicbot` returns **nothing** by design — see the `--log-driver`
+note in `musicbot.service`. The journal is the single source.
+
+Set `LOG_LEVEL=DEBUG` in `~/.config/musicbot/env` and restart the unit for more
+detail, but put it back afterwards: DEBUG logs every gateway event, and the
+journal is capped at 500M.
+
+> **Changing the unit file requires a manual step.** The Deploy workflow updates
+> the *image*, never `musicbot.service`. After editing it in this repo, copy it
+> up and reload by hand, or the running service keeps the old flags:
+>
+> ```bash
+> scp -i ~/.ssh/oracle-admin deploy/musicbot.service ubuntu@<PUBLIC_IP>:/tmp/
+> ssh -i ~/.ssh/oracle-admin ubuntu@<PUBLIC_IP> '
+>   sudo install -m 644 -o musicbot -g musicbot /tmp/musicbot.service \
+>     /home/musicbot/.config/systemd/user/musicbot.service && rm /tmp/musicbot.service'
+> ssh -i ~/.ssh/musicbot-deploy musicbot@<PUBLIC_IP> '
+>   export XDG_RUNTIME_DIR=/run/user/$(id -u)
+>   systemctl --user daemon-reload && systemctl --user restart musicbot.service'
+> ```
 
 ---
 

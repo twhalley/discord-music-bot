@@ -11,15 +11,19 @@
 #   ~/.config/musicbot/image  ->  MUSICBOT_IMAGE=ghcr.io/OWNER/REPO:TAG
 #   ~/.config/musicbot/env    ->  DISCORD_BOT_TOKEN=...
 #
+# Optionally reads ~/.config/musicbot/cookies/youtube.txt, mounted read-write
+# because yt-dlp refreshes cookies as it uses them. `:U` makes podman chown the
+# directory into the container's user namespace, without which the in-container
+# user cannot read a file owned by the deploy account on the host. The mount is
+# harmless when the directory is empty -- the bot simply runs without cookies.
+#
 # Requires `loginctl enable-linger <user>` so the unit starts at boot without a
 # login session. See deploy/README.md section 3.
 
 [Unit]
 Description=Discord music bot (YouTube/SoundCloud)
-# Wants, not Requires: if the token provider is down the bot must still run.
-# YouTube refuses a few videos, everything else keeps working.
-Wants=network-online.target musicbot-pod.service musicbot-pot.service
-After=network-online.target musicbot-pod.service musicbot-pot.service
+Wants=network-online.target
+After=network-online.target
 # Give up only if it crash-loops hard (>5 times in 60s). These are [Unit]
 # directives — systemd silently ignores them if placed in [Service].
 StartLimitIntervalSec=60
@@ -44,7 +48,6 @@ ExecStartPre=-/usr/bin/podman rm -f musicbot
 ExecStart=/usr/bin/podman run \
     --rm \
     --name musicbot \
-    --pod musicbot \
     --log-driver=none \
     --read-only \
     --tmpfs /tmp:rw,size=64m,mode=1777,noexec,nosuid,nodev \
@@ -53,7 +56,8 @@ ExecStart=/usr/bin/podman run \
     --pids-limit=256 \
     --memory=512m \
     --env-file=%h/.config/musicbot/env \
-    --env=POT_PROVIDER_BASE_URL=http://127.0.0.1:4416 \
+    --env=YTDLP_COOKIES_FILE=/cookies/youtube.txt \
+    --volume=%h/.config/musicbot/cookies:/cookies:rw,U \
     ${MUSICBOT_IMAGE}
 ExecStop=/usr/bin/podman stop --time 10 musicbot
 

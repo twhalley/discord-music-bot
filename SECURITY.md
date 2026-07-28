@@ -82,6 +82,11 @@ Stated plainly rather than left implied:
   cache so they are the same in practice, but the pushed digest is not verified
   against the scanned one. Attestations are published (`provenance`, `sbom`)
   but not checked at deploy time.
+- **Optional YouTube cookies are an account credential on the host.** They are
+  off by default and documented with the trade-off stated plainly: a session
+  cookie grants account access and bypasses 2FA, so it should only ever be a
+  throwaway account. Enabling them is a deliberate downgrade of the "no secrets
+  beyond the bot token" property, taken knowingly or not at all.
 - **Redirects are handled at the network layer, not the application one.** The
   host allowlist cannot see past an open redirect on an allowed host; the
   firewall rule is what actually contains that.

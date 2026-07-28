@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from musicbot.util.urls import (
+    host_of,
     is_allowed_host,
     is_probable_url,
     normalize_query,
@@ -104,3 +105,49 @@ def test_is_allowed_host_accepts_supported_services(url: str) -> None:
 )
 def test_is_allowed_host_rejects_everything_else(url: str) -> None:
     assert is_allowed_host(url) is False
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # SoundCloud share links do not live on soundcloud.com. Missing these
+        # made every track shared from the mobile app look unsupported.
+        "https://snd.sc/abc123",
+        "https://soundcloud.app.goo.gl/xyz789",
+        "https://on.soundcloud.com/abc",
+        "https://m.soundcloud.com/artist/track",
+        # Embed/privacy variant of YouTube.
+        "https://www.youtube-nocookie.com/watch?v=x",
+    ],
+)
+def test_share_and_short_links_are_accepted(url: str) -> None:
+    assert is_allowed_host(url) is True
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # Widening the list must not have opened a suffix hole.
+        "https://snd.sc.evil.test/",
+        "https://soundcloud.app.goo.gl.evil.test/",
+        "https://notsnd.sc/",
+        "https://evil.test/?u=snd.sc",
+        "https://snd.sc@169.254.169.254/",
+    ],
+)
+def test_widened_allowlist_did_not_open_a_hole(url: str) -> None:
+    assert is_allowed_host(url) is False
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://SoundCloud.COM/a", "soundcloud.com"),
+        ("https://youtube.com./x", "youtube.com"),
+        ("https://user:pw@169.254.169.254/x", "169.254.169.254"),
+        ("not a url", ""),
+        ("", ""),
+    ],
+)
+def test_host_of_extracts_the_real_host(url: str, expected: str) -> None:
+    assert host_of(url) == expected

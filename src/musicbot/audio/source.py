@@ -11,10 +11,13 @@ read-only and avoids buffering whole files.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Protocol, cast
 
 from musicbot.audio.queue import Track
-from musicbot.util.urls import is_allowed_host, is_probable_url, normalize_query
+from musicbot.util.urls import host_of, is_allowed_host, is_probable_url, normalize_query
+
+log = logging.getLogger(__name__)
 
 # bestaudio, and we tell yt-dlp not to touch the filesystem.
 YTDL_OPTIONS: dict[str, Any] = {
@@ -68,6 +71,10 @@ def _build_query(raw: str) -> str:
         raise SourceError("Empty query.")
     if is_probable_url(query):
         if not is_allowed_host(query):
+            # Log the host, never the whole URL: enough to tell a legitimate
+            # share domain we have missed from someone probing the guard, and
+            # not enough to record what people are listening to.
+            log.info("Refused URL from disallowed host %r", host_of(query) or "<unparsable>")
             raise SourceError(
                 "Only YouTube and SoundCloud links are supported. Try searching by name instead."
             )

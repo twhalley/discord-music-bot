@@ -11,8 +11,11 @@ on:
         required: false
         default: latest
 
+# packages:read lets GITHUB_TOKEN pull the image from GHCR, which is private by
+# default; without it the pull fails with a 403.
 permissions:
   contents: read
+  packages: read
 
 concurrency:
   group: deploy-production
@@ -30,27 +33,45 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          # Pin the host key. Without `fingerprint` this action accepts ANY host
+          # key, so anything answering on SSH_HOST -- a recycled ephemeral IP, a
+          # hijacked route -- would be handed the bot token below.
+          fingerprint: ${{ secrets.SSH_HOST_FINGERPRINT }}
           # Fail the deploy if any step errors.
           script_stop: true
-          # envs lists which local env vars to forward into the remote script.
-          envs: IMAGE_TAG,BOT_TOKEN
+          # Secrets travel as env vars rather than being interpolated into the
+          # script text that is sent to the remote shell.
+          envs: IMAGE_REPO,IMAGE_TAG,BOT_TOKEN,GHCR_USER,GHCR_TOKEN
           script: |
             set -euo pipefail
-            IMAGE="ghcr.io/${{ github.repository }}:${IMAGE_TAG}"
+            # A non-interactive SSH session doesn't set this, and
+            # `systemctl --user` fails without it.
+            export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 
-            # Write the token to a root-owned, 0600 EnvironmentFile that only the
-            # systemd unit reads. The token never lands in the image or in logs.
+            IMAGE="${IMAGE_REPO}:${IMAGE_TAG}"
+
+            # Written 0600 by umask and owned by the deploy user, so the token
+            # never needs root and never lands in the image or in logs.
             umask 077
-            printf 'DISCORD_BOT_TOKEN=%s\n' "${BOT_TOKEN}" | sudo tee /etc/musicbot.env >/dev/null
-            sudo chmod 600 /etc/musicbot.env
+            mkdir -p "${HOME}/.config/musicbot"
+            printf 'DISCORD_BOT_TOKEN=%s\n' "${BOT_TOKEN}" \
+              > "${HOME}/.config/musicbot/env"
 
-            echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u ${{ github.actor }} --password-stdin
-            sudo podman pull "${IMAGE}"
+            # Login and pull are both rootless, as the same user, so they share
+            # one auth.json. (Mixing `podman login` with `sudo podman pull` does
+            # not work -- root reads a different credential store.)
+            printf '%s' "${GHCR_TOKEN}" \
+              | podman login ghcr.io -u "${GHCR_USER}" --password-stdin
+            podman pull "${IMAGE}"
 
-            # Point the systemd unit at the freshly pulled tag and restart it.
-            printf 'MUSICBOT_IMAGE=%s\n' "${IMAGE}" | sudo tee /etc/musicbot.image >/dev/null
-            sudo systemctl restart musicbot.service
-            sudo systemctl --no-pager status musicbot.service | head -n 10
+            # Point the user unit at the freshly pulled tag and restart it.
+            printf 'MUSICBOT_IMAGE=%s\n' "${IMAGE}" \
+              > "${HOME}/.config/musicbot/image"
+            systemctl --user restart musicbot.service
+            systemctl --user --no-pager status musicbot.service | head -n 10
         env:
+          IMAGE_REPO: ghcr.io/${{ github.repository }}
           IMAGE_TAG: ${{ github.event.inputs.tag }}
           BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}

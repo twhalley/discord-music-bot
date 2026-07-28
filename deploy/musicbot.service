@@ -1,22 +1,32 @@
-# systemd unit for the Discord music bot, running as a hardened podman container.
-# Install to /etc/systemd/system/musicbot.service on the Oracle VM.
+# systemd *user* unit for the Discord music bot, running as a rootless podman
+# container. Install to ~/.config/systemd/user/musicbot.service on the Oracle VM.
 #
-# Reads two root-owned, 0600 files that the GitHub deploy workflow writes:
-#   /etc/musicbot.image   ->  MUSICBOT_IMAGE=ghcr.io/OWNER/REPO:TAG
-#   /etc/musicbot.env     ->  DISCORD_BOT_TOKEN=...
+# Rootless by design: nothing here needs root — no privileged ports, no host
+# mounts, and the image already runs as an unprivileged user internally. So the
+# deploy user needs no sudo rights at all, and a compromised SSH key is not a
+# root credential on the host.
 #
-# The container itself keeps the same hardening as embed-fixer: read-only root
-# filesystem, all capabilities dropped, no privilege escalation, non-root user.
+# Reads two 0600 files that the GitHub deploy workflow writes, both owned by the
+# deploy user rather than root:
+#   ~/.config/musicbot/image  ->  MUSICBOT_IMAGE=ghcr.io/OWNER/REPO:TAG
+#   ~/.config/musicbot/env    ->  DISCORD_BOT_TOKEN=...
+#
+# Requires `loginctl enable-linger <user>` so the unit starts at boot without a
+# login session. See deploy/README.md section 3.
 
 [Unit]
 Description=Discord music bot (YouTube/SoundCloud)
 Wants=network-online.target
 After=network-online.target
+# Give up only if it crash-loops hard (>5 times in 60s). These are [Unit]
+# directives — systemd silently ignores them if placed in [Service].
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
-EnvironmentFile=/etc/musicbot.image
-EnvironmentFile=/etc/musicbot.env
+EnvironmentFile=%h/.config/musicbot/image
+EnvironmentFile=%h/.config/musicbot/env
 
 # Clean up any prior container before starting.
 ExecStartPre=-/usr/bin/podman rm -f musicbot
@@ -29,15 +39,13 @@ ExecStart=/usr/bin/podman run \
     --security-opt=no-new-privileges \
     --pids-limit=256 \
     --memory=512m \
-    --env-file=/etc/musicbot.env \
+    --env-file=%h/.config/musicbot/env \
     ${MUSICBOT_IMAGE}
 ExecStop=/usr/bin/podman stop --time 10 musicbot
 
 Restart=always
 RestartSec=5
-# Give up only if it crash-loops hard (>5 times in 60s).
-StartLimitIntervalSec=60
-StartLimitBurst=5
 
 [Install]
-WantedBy=multi-user.target
+# User units install to default.target, not multi-user.target.
+WantedBy=default.target

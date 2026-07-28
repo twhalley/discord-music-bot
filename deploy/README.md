@@ -4,7 +4,7 @@ This bot runs as a hardened `podman` container managed by `systemd`. GitHub
 Actions builds and scans the image, pushes it to GHCR, and a manual **Deploy**
 workflow SSHes into the VM to pull the new image and restart the service.
 
-The whole path is: **create the VM → make it reachable → prep it once → add four
+The whole path is: **create the VM → make it reachable → prep it once → add five
 GitHub secrets → run the Deploy workflow.** Follow the sections in order.
 
 > **The one thing to get right:** the Deploy workflow SSHes *into* the VM, so the
@@ -190,23 +190,58 @@ ssh -i /path/to/your-key.key ubuntu@<PUBLIC_IP>
 
 ## 3. Prepare the VM (one time)
 
-SSH in with the key you saved and the public IP, then, on the VM:
+The bot runs **rootless**: a systemd *user* unit, a container owned by the
+`ubuntu` user, and no `sudo` rights for the deploy account at all. Nothing here
+needs root — no privileged ports, no host mounts, and the image already drops to
+an unprivileged user internally. The upshot is that `SSH_PRIVATE_KEY` is not a
+root credential on the VM.
+
+`scp` the unit up, SSH in, and run:
 
 ```bash
-sudo apt-get update && sudo apt-get install -y podman
-# Let the deploy user run the commands the workflow needs without a password:
-echo "$USER ALL=(root) NOPASSWD: /usr/bin/podman, /usr/bin/tee, /usr/bin/chmod, /usr/bin/systemctl" \
-  | sudo tee /etc/sudoers.d/musicbot
-# Install the systemd unit (scp musicbot.service up first, or paste it):
-sudo install -m 644 /dev/stdin /etc/systemd/system/musicbot.service < musicbot.service
-sudo systemctl daemon-reload
-sudo systemctl enable musicbot.service   # starts on boot; first real start happens on deploy
+sudo apt-get update && sudo apt-get install -y podman uidmap
+
+# Rootless podman needs subuid/subgid ranges; Ubuntu cloud images often ship
+# without them for the `ubuntu` user.
+grep -q '^ubuntu:' /etc/subuid || \
+  sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 ubuntu
+
+# Let user services run without a login session — i.e. start at boot.
+sudo loginctl enable-linger "$USER"
+
+mkdir -p ~/.config/systemd/user ~/.config/musicbot
+install -m 644 musicbot.service ~/.config/systemd/user/musicbot.service
+systemctl --user daemon-reload
+systemctl --user enable musicbot.service  # first real start happens on deploy
 ```
 
-> The deploy workflow writes `/etc/musicbot.env` (the token) and
-> `/etc/musicbot.image` (the image tag) as root-owned `0600` files, so they are
-> never committed and never appear in the image. You do **not** create these by
-> hand.
+Then confirm the cgroup controllers the unit's `--memory` and `--pids-limit`
+flags depend on are delegated to your user slice:
+
+```bash
+cat /sys/fs/cgroup/user.slice/user-$(id -u).slice/cgroup.controllers
+```
+
+`memory` and `pids` must both appear. Ubuntu 24.04 delegates them by default; if
+they're missing the container fails to start with a cgroup error rather than
+quietly ignoring the limits.
+
+Finally, capture the host key fingerprint for the `SSH_HOST_FINGERPRINT` secret.
+Run this **from your laptop**, not the VM:
+
+```bash
+ssh-keyscan -t ed25519 <PUBLIC_IP> 2>/dev/null | ssh-keygen -lf - | awk '{print $2}'
+```
+
+> The deploy workflow writes `~/.config/musicbot/env` (the token) and
+> `~/.config/musicbot/image` (the image tag) as `0600` files owned by the deploy
+> user, so they are never committed and never appear in the image. You do **not**
+> create these by hand.
+>
+> **Upgrading from an older rootful setup?** Remove the leftovers:
+> `sudo systemctl disable --now musicbot.service`, then
+> `sudo rm -f /etc/systemd/system/musicbot.service /etc/sudoers.d/musicbot
+> /etc/musicbot.env /etc/musicbot.image`.
 
 ---
 
@@ -223,6 +258,7 @@ Repo **Settings → Environments → New environment → name it `production`**,
 | `SSH_HOST` | The VM's **Public IPv4 address** from the instance details page. |
 | `SSH_USER` | `ubuntu` (default user on Oracle Ubuntu images). |
 | `SSH_PRIVATE_KEY` | The **full contents** of the `.key` file you downloaded — including the `-----BEGIN...-----` and `-----END...-----` lines. |
+| `SSH_HOST_FINGERPRINT` | The `ssh-keyscan` output from section 3, e.g. `SHA256:abc123…`. |
 | `DISCORD_BOT_TOKEN` | Discord Developer Portal → your app → **Bot** → **Reset/Copy Token**. |
 
 `GITHUB_TOKEN` is **auto-provided** by GitHub Actions — do not add it.
@@ -231,6 +267,12 @@ not secrets — ignore them for production.
 
 Optionally set **Required reviewers** on the environment so every deploy needs a
 click to approve.
+
+> ⚠️ **`SSH_HOST_FINGERPRINT` is not optional.** Without it the SSH action
+> accepts *any* host key, so anything answering on `SSH_HOST` — a recycled
+> ephemeral IP, a hijacked route — receives your `DISCORD_BOT_TOKEN`. If you
+> rebuild the VM, the host key changes and this secret must be regenerated
+> alongside `SSH_HOST`.
 
 > ⚠️ **Keep `SSH_HOST` current.** If the VM is terminated and rebuilt, an
 > ephemeral public IP changes. A stale `SSH_HOST` fails at the **"Deploy over
@@ -251,7 +293,7 @@ Verify it came up:
 
 ```bash
 ssh -i /path/to/your-key.key ubuntu@<PUBLIC_IP> \
-  'sudo systemctl --no-pager status musicbot.service'
+  'systemctl --user --no-pager status musicbot.service'
 ```
 
 ---

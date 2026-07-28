@@ -7,8 +7,18 @@ requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "twhalley" }]
 dependencies = [
-    "discord.py==2.7.1",
-    "PyNaCl==1.6.2",
+    # The [voice] extra is load-bearing. discord.py 2.7 moved voice onto
+    # Discord's DAVE protocol, so connecting to a channel now needs `davey` in
+    # addition to PyNaCl. Without it the bot starts, logs in and syncs commands
+    # perfectly well, then every /play dies inside channel.connect() with
+    # "RuntimeError: davey library needed in order to use voice" -- the only
+    # hint at startup is a WARNING that is easy to read as advisory.
+    "discord.py[voice]==2.7.1",
+    # discord.py's voice extra requires PyNaCl<1.6. 1.6.2 was pinned here,
+    # outside that range: pip did not object because PyNaCl was named directly
+    # rather than resolved through the extra. Check that bound before bumping.
+    "PyNaCl==1.5.0",
+    "davey==0.1.6",
     "yt-dlp==2026.7.4",
 ]
 

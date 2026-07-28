@@ -27,8 +27,14 @@ Behaviour worth knowing:
   never fetched. See [`SECURITY.md`](SECURITY.md).
 - **Commands are rate-limited per user**, the queue is capped at 100 tracks, and
   tracks longer than four hours are refused. Live streams (no duration) play.
-- **The bot leaves once the last human does**, rather than holding a voice
-  connection indefinitely.
+- **The bot leaves when it has nothing to do** — shortly after the queue drains,
+  or as soon as the last human leaves the channel — rather than holding a voice
+  connection indefinitely. Queueing another track during the short grace period
+  cancels the departure.
+- **Some YouTube videos will refuse to play.** YouTube gates certain videos
+  behind a sign-in when the request comes from a datacenter IP, so a link that
+  works in your browser can fail on the server. The bot says so and suggests
+  searching by name, which usually finds a playable upload.
 
 ## Architecture
 

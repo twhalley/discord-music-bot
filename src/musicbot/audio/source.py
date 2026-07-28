@@ -114,19 +114,62 @@ def build_track(info: dict[str, Any], requested_by: int) -> Track:
     )
 
 
+# yt-dlp failure text is not shown to users verbatim -- it leaks internals and
+# reads like a stack trace. Recognised cases become a short, actionable message
+# instead; anything unmatched stays generic.
+_ERROR_HINTS: tuple[tuple[str, str], ...] = (
+    (
+        "sign in to confirm",
+        "YouTube is asking this server to sign in before it will serve that "
+        "video. Try searching for it by name instead — another upload usually "
+        "plays fine.",
+    ),
+    ("private video", "That video is private."),
+    ("video unavailable", "That video is unavailable."),
+    ("removed by the uploader", "That video was removed by its uploader."),
+    # Match full phrases, never bare words: "age" alone also matches "webpage",
+    # "message" and "package", which silently mislabels unrelated failures.
+    ("age-restricted", "That video is age-restricted and cannot be played."),
+    ("age restricted", "That video is age-restricted and cannot be played."),
+    ("confirm your age", "That video is age-restricted and cannot be played."),
+    ("copyright", "That video is blocked on copyright grounds."),
+    ("not available in your country", "That video is not available from this server's region."),
+    ("unable to download webpage", "Could not reach that site. It may be down."),
+)
+
+
+def _friendly_error(exc: Exception) -> str:
+    """Map a yt-dlp failure onto a message worth showing a user."""
+    text = str(exc).lower()
+    for needle, message in _ERROR_HINTS:
+        if needle in text:
+            return message
+    return "Could not resolve that link."
+
+
 def extract_info(query: str, *, extractor: _Extractor | None = None) -> dict[str, Any]:
     """Run yt-dlp for ``query`` and return its info dict.
 
     Args:
         query: A URL or ``ytsearch``-style query.
         extractor: Injected in tests. Defaults to a real ``yt_dlp.YoutubeDL``.
+
+    Raises:
+        SourceError: if extraction fails. yt-dlp's own exception text is
+            translated rather than surfaced, so users get an actionable
+            sentence and internals stay out of Discord.
     """
     if extractor is None:
         # Imported lazily so unit tests never need yt-dlp installed.
         from yt_dlp import YoutubeDL
 
-        with YoutubeDL(YTDL_OPTIONS) as ydl:
-            info = ydl.extract_info(query, download=False)
+        try:
+            with YoutubeDL(YTDL_OPTIONS) as ydl:
+                info = ydl.extract_info(query, download=False)
+        except SourceError:
+            raise
+        except Exception as exc:
+            raise SourceError(_friendly_error(exc)) from exc
     else:
         info = extractor.extract_info(query, download=False)
 

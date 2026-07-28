@@ -28,11 +28,21 @@ Type=simple
 EnvironmentFile=%h/.config/musicbot/image
 EnvironmentFile=%h/.config/musicbot/env
 
+# Tag journal entries so `journalctl -t musicbot` works and lines are readable.
+SyslogIdentifier=musicbot
+
 # Clean up any prior container before starting.
 ExecStartPre=-/usr/bin/podman rm -f musicbot
+# On --log-driver=none: podman's default rootless driver is `journald`, so
+# conmon writes every line to the journal *and* systemd captures the same line
+# from podman's stdout -- storing each message twice. `none` disables conmon's
+# copy; stdout still reaches systemd, so journalctl is unaffected. The cost is
+# that `podman logs musicbot` returns nothing -- use journalctl instead.
+# (`passthrough` would be cleaner but needs podman >= 4.0; 22.04 ships 3.4.4.)
 ExecStart=/usr/bin/podman run \
     --rm \
     --name musicbot \
+    --log-driver=none \
     --read-only \
     --tmpfs /tmp:rw,size=64m,mode=1777,noexec,nosuid,nodev \
     --cap-drop=ALL \

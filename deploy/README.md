@@ -4,53 +4,257 @@ This bot runs as a hardened `podman` container managed by `systemd`. GitHub
 Actions builds and scans the image, pushes it to GHCR, and a manual **Deploy**
 workflow SSHes into the VM to pull the new image and restart the service.
 
-## 1. Create the free VM
+The whole path is: **create the VM → make it reachable → prep it once → add four
+GitHub secrets → run the Deploy workflow.** Follow the sections in order.
 
-1. Sign up at <https://cloud.oracle.com> (Always Free tier; a card is required
-   for identity but is not charged).
-2. Create a **VM.Standard.A1.Flex** (Ampere ARM) instance — 1 OCPU / 6 GB is
-   plenty. Use an **Ubuntu 22.04/24.04** image. ARM matches the `arm64` image
-   the pipeline builds.
-3. Save the SSH private key Oracle generates — it becomes the `SSH_PRIVATE_KEY`
-   secret below.
-4. No inbound ports are needed (the bot only makes **outbound** connections to
-   Discord), so you can leave the default security list closed.
+> **The one thing to get right:** the Deploy workflow SSHes *into* the VM, so the
+> VM needs a **public IP** and **inbound TCP 22**. An instance can sit happily in
+> the `Running` state with neither, and nothing in the console will tell you.
+> Section 2 exists entirely because of this.
 
-## 2. Prepare the VM (one time)
+---
+
+## 1. Create the free VM (Oracle Cloud console)
+
+Sign up at <https://cloud.oracle.com> (Always Free tier; a card is required for
+identity verification but is not charged). Then **Menu → Compute → Instances →
+Create instance** and work through the wizard:
+
+### Basic information
+- **Name:** anything, e.g. `discord-music-bot`.
+- **Image:** click *Edit* → **Ubuntu** (22.04 or 24.04). The default is often
+  Oracle Linux — change it to Ubuntu.
+- **Shape:** click *Change shape* → **Ampere** tab → **VM.Standard.A1.Flex**,
+  then set **1 OCPU / 6 GB**.
+  - **Ampere (ARM) is recommended, not required.** The pipeline publishes a
+    **multi-arch** image (`linux/amd64,linux/arm64` — see
+    `.github/workflows/docker.yml`), so an x86 shape will run the container
+    fine. Choose Ampere because that's where the Always Free allowance is:
+    **3,000 OCPU-hours and 18,000 GB-hours per month**, which covers 1 OCPU /
+    6 GB running continuously with room to spare.
+
+### Networking
+- **Primary network:** *Create new virtual cloud network* (lets the wizard build
+  a VCN + public subnet for you). Leave the generated names as-is.
+- **Subnet:** *Create new public subnet*. Leave CIDR `10.0.0.0/24`.
+  - ⚠️ It **must** be a public subnet. A subnet's *"prohibit public IP
+    addresses"* flag is **immutable after creation** — a private subnet can
+    never be converted, and no VNIC in it can ever hold a public IP.
+- **Assign a public IPv4 address:** turn this **ON**.
+  - ⚠️ **If this toggle is greyed out:** open **Private IPv4 address assignment
+    → Subnet IPv4 prefixes** and select the `10.0.0.0/24` prefix. The toggle
+    becomes clickable immediately. The console shows **no error text** explaining
+    this, and it is the single most likely reason an instance comes up with no
+    public IP.
+- Ignore the **IPv6** section (leave it off).
+
+### Add SSH keys
+- Leave **Generate a key pair for me** selected.
+- Click **Save private key** and download the `.key` file. **This file is your
+  `SSH_PRIVATE_KEY` secret and cannot be re-downloaded later — keep it safe.**
+- Click **Save public key** too (handy to have).
+- (If you already have a key, choose *Upload public key file* and paste your own
+  `.pub` instead; then the matching private key is your `SSH_PRIVATE_KEY`.)
+
+### Finish
+Click **Create** and wait for the instance state to go **Running**. Then check
+the **Public IPv4 address** field on the instance details page:
+
+- **It shows an address** → note it down (it's your `SSH_HOST`) and go to
+  section 3.
+- **It's blank or says "-"** → go to section 2. The instance is fine; it just
+  isn't reachable yet.
+
+The default login user on Ubuntu images is **`ubuntu`** — that's your `SSH_USER`.
+
+---
+
+## 2. Networking: making the instance reachable
+
+A reachable OCI instance is **four separate objects**, not one setting. The
+create wizard usually assembles all four for you, but when it doesn't, it fails
+silently — you get a `Running` instance you cannot reach. Check them in order;
+each one is independently capable of breaking connectivity.
+
+| # | Object | Where to check |
+| --- | --- | --- |
+| 1 | A **public subnet** | VCN → Subnets → your subnet → *Subnet access* |
+| 2 | An **internet gateway** on the VCN | VCN → Internet Gateways |
+| 3 | A **route rule** `0.0.0.0/0` → that gateway | VCN → Route Tables |
+| 4 | A **public IP** mapped to the VNIC's primary private IP | Instance → Networking → Attached VNICs |
+
+### 1. Public subnet
+
+VCN → **Subnets** → your subnet → **Subnet access**. It reads either *Public
+Subnet* or *Private Subnet*.
+
+If it says **Private Subnet**, stop — you cannot fix this in place. The
+"prohibit public IP addresses" flag is set at creation and cannot be changed.
+Your options:
+
+- **Terminate and recreate the instance** in a public subnet (cleanest, and
+  cheap while the VM is still empty). Untick *Preserve boot volume* so you don't
+  leave an orphaned volume behind.
+- Attaching a *secondary* VNIC in a public subnet technically works, but needs
+  source-based routing configured inside Ubuntu for SSH to reply on the right
+  interface. Not worth it for a fresh VM.
+
+### 2. Internet gateway
+
+VCN page → **Internet Gateways**. If the list is empty, **Create Internet
+Gateway** (defaults are fine).
+
+### 3. Route rule — check the table the VNIC *actually* uses
+
+VCN → **Route Tables**. You need a rule with destination `0.0.0.0/0` and target
+type **Internet Gateway** pointing at the gateway from step 2.
+
+⚠️ **A VCN can have several route tables, and the quick action sometimes writes
+the rule into a different one than your VNIC points at.** Don't just confirm
+"a route table has the rule" — confirm *the right one* does:
+
+1. Instance → **Networking** → **Attached VNICs** → primary VNIC → note its
+   **Route table**.
+2. Open **that** route table and verify the `0.0.0.0/0` rule is in it.
+
+### 4. Public IP on the VNIC
+
+This is the step people miss: objects 1–3 make the subnet routable but don't
+hand out an address. See the recovery path below.
+
+### Recovery: adding a public IP to an already-running instance
+
+1. Instance → **Networking** → **Attached VNICs** → click the **primary VNIC**.
+2. Open the **IP administration** tab.
+   - The console layout varies by tenancy and region — in some it's a tab, in
+     others a *Resources* sidebar entry called *IPv4 Addresses*. Same thing.
+3. Click the **three-dot menu** on the **primary private IP** row → **Edit**.
+4. **Public IP type → Ephemeral public IP**.
+5. Leave **Route Table** on *"Use VCN, subnet or VNIC route table"*.
+6. **Update**, then refresh the instance page — **Public IPv4 address** is now
+   populated.
+
+**Ephemeral vs reserved.** Both are free, and Always Free tenancies include one
+reserved public IP.
+
+- **Ephemeral** survives stop/start and reboots; it is released only when the
+  instance is **terminated**.
+- **Reserved** survives termination too. Use it if you'd rather not update the
+  `SSH_HOST` secret after rebuilding the VM.
+
+### ⚠️ Don't run "Connect public subnet to internet" twice
+
+The **Connect public subnet to internet** quick action creates the internet
+gateway, the route rule, and a network security group in one click — but it is
+**not usefully idempotent**. Each run attaches *another* NSG to the VNIC. Running
+it three times leaves three identically-named `ig-quick-action-NSG` entries on
+one VNIC: harmless in effect, but the rule set becomes unreadable.
+
+If you've already done it: once connectivity works, go to the VNIC → **Edit**
+next to **Network security groups** and remove the duplicates, keeping the one
+that actually carries the SSH rule.
+
+### Ingress for TCP 22
+
+Traffic is filtered by the **union** of the subnet's **security list** *and* any
+**NSGs** attached to the VNIC — either one permitting the traffic is enough.
+That also means checking only one of them can mislead you.
+
+Verify at least one of these allows it:
+
+- **Security list:** VCN → Security Lists → your subnet's list → **Ingress
+  Rules** → source `0.0.0.0/0`, protocol **TCP**, destination port **22**.
+- **NSG:** VNIC → Network security groups → open the attached NSG → same rule.
+
+Don't assume the quick-action NSG has the SSH rule — open it and confirm.
+
+> **On the bot itself:** it only makes *outbound* connections to Discord, so no
+> application ports are ever needed. Port 22 is required for **setup and
+> deployment**, not for the bot to run.
+
+### Verify
+
+```bash
+chmod 600 /path/to/your-key.key
+ssh -i /path/to/your-key.key ubuntu@<PUBLIC_IP>
+```
+
+- **Connection timed out** → networking: re-check objects 1–4 and the ingress
+  rule above.
+- **Connection refused** → networking is fine; sshd isn't up. Check the instance
+  is `Running` and give it a minute after first boot.
+- **Permission denied (publickey)** → networking is fine; wrong key or wrong
+  user. The Ubuntu images use `ubuntu`, not `opc` (that's Oracle Linux).
+
+---
+
+## 3. Prepare the VM (one time)
+
+SSH in with the key you saved and the public IP, then, on the VM:
 
 ```bash
 sudo apt-get update && sudo apt-get install -y podman
-# Let the deploy user run the few commands the workflow needs without a password:
+# Let the deploy user run the commands the workflow needs without a password:
 echo "$USER ALL=(root) NOPASSWD: /usr/bin/podman, /usr/bin/tee, /usr/bin/chmod, /usr/bin/systemctl" \
   | sudo tee /etc/sudoers.d/musicbot
-sudo install -m 644 /dev/stdin /etc/systemd/system/musicbot.service < musicbot.service  # or scp it up
+# Install the systemd unit (scp musicbot.service up first, or paste it):
+sudo install -m 644 /dev/stdin /etc/systemd/system/musicbot.service < musicbot.service
 sudo systemctl daemon-reload
 sudo systemctl enable musicbot.service   # starts on boot; first real start happens on deploy
 ```
 
 > The deploy workflow writes `/etc/musicbot.env` (the token) and
 > `/etc/musicbot.image` (the image tag) as root-owned `0600` files, so they are
-> never committed and never appear in the image.
+> never committed and never appear in the image. You do **not** create these by
+> hand.
 
-## 3. Add GitHub secrets
+---
 
-Repo **Settings -> Environments -> New environment -> `production`**, then add:
+## 4. Add GitHub secrets
 
-| Secret | Value |
+The Deploy workflow runs in the `production` **environment**, so the secrets must
+be added there (not as plain repository secrets, or the job won't see them).
+
+Repo **Settings → Environments → New environment → name it `production`**, then
+**Add environment secret** for each of these:
+
+| Secret | How to get the value |
 | --- | --- |
-| `SSH_HOST` | VM public IP |
-| `SSH_USER` | e.g. `ubuntu` |
-| `SSH_PRIVATE_KEY` | the private key from step 1 |
-| `DISCORD_BOT_TOKEN` | the bot token from the Discord Developer Portal |
+| `SSH_HOST` | The VM's **Public IPv4 address** from the instance details page. |
+| `SSH_USER` | `ubuntu` (default user on Oracle Ubuntu images). |
+| `SSH_PRIVATE_KEY` | The **full contents** of the `.key` file you downloaded — including the `-----BEGIN...-----` and `-----END...-----` lines. |
+| `DISCORD_BOT_TOKEN` | Discord Developer Portal → your app → **Bot** → **Reset/Copy Token**. |
+
+`GITHUB_TOKEN` is **auto-provided** by GitHub Actions — do not add it.
+`DEV_GUILD_ID` and `LOG_LEVEL` are optional local-dev vars (see `.env.example`),
+not secrets — ignore them for production.
 
 Optionally set **Required reviewers** on the environment so every deploy needs a
 click to approve.
 
-## 4. Deploy
+> ⚠️ **Keep `SSH_HOST` current.** If the VM is terminated and rebuilt, an
+> ephemeral public IP changes. A stale `SSH_HOST` fails at the **"Deploy over
+> SSH"** step of the Deploy job with a connection timeout — the error names the
+> SSH action, not the secret, so it reads like a broken workflow rather than a
+> stale value. Check this first when a previously-working deploy starts timing
+> out. A **reserved** public IP (section 2) avoids the problem.
+
+---
+
+## 5. Deploy
 
 Push to `main` → the **Build & publish image** workflow builds, scans (Trivy),
 and pushes `ghcr.io/OWNER/REPO:latest`. Then run the **Deploy** workflow
 (Actions tab → Deploy → *Run workflow*), optionally passing a specific tag.
+
+Verify it came up:
+
+```bash
+ssh -i /path/to/your-key.key ubuntu@<PUBLIC_IP> \
+  'sudo systemctl --no-pager status musicbot.service'
+```
+
+---
 
 ## Updating
 

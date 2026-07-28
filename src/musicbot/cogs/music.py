@@ -8,7 +8,9 @@ drives the per-guild player loop, and turns interactions into queue operations.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+from typing import Any
 
 import discord
 from discord import app_commands
@@ -32,6 +34,11 @@ PLAY_COOLDOWN_RATE = 5
 PLAY_COOLDOWN_PER = 60.0
 CONTROL_COOLDOWN_RATE = 10
 CONTROL_COOLDOWN_PER = 60.0
+
+# How long the bot's own replies stay in the channel before it removes them.
+# Status chatter ("Queued ...", "Skipped.") otherwise accumulates forever in a
+# busy server. Long enough to read, short enough not to become the channel.
+MESSAGE_CLEANUP_SECONDS = 60.0
 
 # How long to wait after the queue drains before leaving the channel. Not zero:
 # a /play issued just as the last track ends spends a few seconds in yt-dlp, and
@@ -92,6 +99,32 @@ class Music(commands.Cog):
             await interaction.followup.send(message, ephemeral=True)
         else:
             await interaction.response.send_message(message, ephemeral=True)
+
+    @commands.Cog.listener()
+    async def on_app_command_completion(
+        self,
+        interaction: discord.Interaction,
+        command: app_commands.Command[Any, ..., Any] | app_commands.ContextMenu,
+    ) -> None:
+        """Remove the bot's own reply a short while after each command.
+
+        One central hook rather than a cleanup call at every reply site, so a
+        new command cannot forget to tidy up after itself.
+
+        Deleting its *own* interaction response needs no Discord permission —
+        it goes through the interaction token, not the channel — so this does
+        not widen the bot's grant beyond Connect and Speak. Ephemeral replies
+        are only visible to the caller and disappear on their own; attempting
+        to delete one that has already gone is handled below.
+        """
+        self.bot.loop.create_task(self._delete_reply_later(interaction))
+
+    async def _delete_reply_later(self, interaction: discord.Interaction) -> None:
+        await asyncio.sleep(MESSAGE_CLEANUP_SECONDS)
+        # Already dismissed, already deleted, or the channel is gone — none of
+        # which is worth failing or logging noisily over.
+        with contextlib.suppress(discord.HTTPException):
+            await interaction.delete_original_response()
 
     @commands.Cog.listener()
     async def on_voice_state_update(

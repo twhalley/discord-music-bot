@@ -125,3 +125,13 @@ def test_cooldowns_are_configured_on_commands() -> None:
     assert PLAY_COOLDOWN_RATE > 0
     assert PLAY_COOLDOWN_PER > 0
     assert CONTROL_COOLDOWN_RATE > 0
+
+
+def test_bot_replies_are_cleaned_up_not_left_in_the_channel() -> None:
+    """Bot chatter is removed after a delay rather than accumulating forever."""
+    from musicbot.cogs.music import MESSAGE_CLEANUP_SECONDS, Music
+
+    assert MESSAGE_CLEANUP_SECONDS > 0
+    # A central listener, so a newly added command cannot forget to tidy up.
+    assert hasattr(Music, "on_app_command_completion")
+    assert hasattr(Music, "_delete_reply_later")

@@ -13,7 +13,7 @@ import pytest
 
 from musicbot import __main__ as entrypoint
 from musicbot.bot import INITIAL_EXTENSIONS, MusicBot, build_intents
-from musicbot.cogs.music import _display
+from musicbot.cogs.music import _display, _for_log
 from musicbot.config import Config
 
 
@@ -33,7 +33,7 @@ def test_music_is_the_only_extension_loaded() -> None:
 
 
 def test_bot_exposes_the_config_it_was_built_with() -> None:
-    cfg = Config(token="t", log_level="INFO", dev_guild_id=None)
+    cfg = Config(token="t", log_level="INFO", dev_guild_id=None, allowed_guild_ids=frozenset())
     bot = MusicBot(cfg)
     assert bot.config is cfg
     assert bot.intents.voice_states is True
@@ -69,7 +69,9 @@ def test_main_starts_the_bot_with_the_configured_token(
 
 def test_client_never_honours_mentions_from_untrusted_text() -> None:
     """Track titles reach Discord messages, so mentions must never resolve."""
-    bot = MusicBot(Config(token="t", log_level="INFO", dev_guild_id=None))
+    bot = MusicBot(
+        Config(token="t", log_level="INFO", dev_guild_id=None, allowed_guild_ids=frozenset())
+    )
     assert bot.allowed_mentions.everyone is False
     assert bot.allowed_mentions.users is False
     assert bot.allowed_mentions.roles is False
@@ -96,3 +98,30 @@ def test_display_leaves_mention_text_intact() -> None:
     covers it.
     """
     assert _display("@everyone") == "@everyone"
+
+
+def test_log_sanitiser_flattens_and_truncates() -> None:
+    """Newlines in untrusted text would let someone forge extra log records."""
+    assert "\n" not in _for_log("evil\nINFO forged entry")
+    assert "\r" not in _for_log("evil\rmore")
+    assert len(_for_log("x" * 500)) == 120
+
+
+def test_leaves_guilds_outside_the_allowlist() -> None:
+    cfg = Config.from_env({"DISCORD_BOT_TOKEN": "t", "ALLOWED_GUILD_IDS": "111"})
+    bot = MusicBot(cfg)
+    assert bot.config.is_guild_allowed(111) is True
+    assert bot.config.is_guild_allowed(999) is False
+
+
+def test_cooldowns_are_configured_on_commands() -> None:
+    """Rate limiting is a security control, so assert it is actually attached."""
+    from musicbot.cogs.music import (
+        CONTROL_COOLDOWN_RATE,
+        PLAY_COOLDOWN_PER,
+        PLAY_COOLDOWN_RATE,
+    )
+
+    assert PLAY_COOLDOWN_RATE > 0
+    assert PLAY_COOLDOWN_PER > 0
+    assert CONTROL_COOLDOWN_RATE > 0

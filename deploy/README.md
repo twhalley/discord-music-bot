@@ -483,7 +483,36 @@ A proof-of-origin token provider does **not** fix it: YouTube rejects the
 request before tokens become relevant. That was tried and removed. An
 authenticated request is what gets through.
 
-### ⚠️ Read this before deciding
+### ⚠️ Tested here, and it made things WORSE
+
+Before doing any of this, know how it went on this deployment. A correctly
+exported, fully signed-in cookie jar (all of `SID`, `HSID`, `SSID`, `APISID`,
+`SAPISID`, `__Secure-1PSID`, `__Secure-3PSID`, `LOGIN_INFO`) was tested against
+the live VM:
+
+| | without cookies | with cookies |
+| --- | --- | --- |
+| Previously-failing video | bot check | **no formats** |
+| Known-good video | **OK** | **no formats** |
+| YouTube search | **OK** | **no formats** |
+| SoundCloud | OK | OK |
+
+The cookies *did* get past "Sign in to confirm you're not a bot" — the error
+changed. But YouTube then returned **zero playable formats for every video**,
+including ones that worked fine unauthenticated. Every player client was tried
+(`web`, `web_safari`, `mweb`, `tv`, `tv_embedded`, `web_embedded`), with and
+without a PO token provider. All identical.
+
+The practical result is that enabling cookies **broke YouTube entirely** rather
+than fixing it. Authenticating from a datacenter IP appears to get the session
+served metadata but no streams.
+
+So this section documents an option that did not work here. It may behave
+differently with an older, well-established account — a fresh throwaway is
+exactly the profile YouTube treats most harshly — but that is a guess, and the
+measured result was a regression.
+
+### ⚠️ And if you try anyway, read this
 
 Cookies are **account credentials**. This is a real trade-off, not a formality:
 

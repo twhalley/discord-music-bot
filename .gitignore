@@ -4,6 +4,10 @@
 !.env.example
 *.pem
 *.key
+# Exported browser cookies are account credentials — never commit them.
+cookies.txt
+cookies*.txt
+*cookies.txt
 
 # Python
 __pycache__/

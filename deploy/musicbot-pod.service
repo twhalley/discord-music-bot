@@ -4,6 +4,10 @@
 # provider on 127.0.0.1 without the provider ever binding to the VM's network
 # interface. Nothing new is exposed to the outside world.
 #
+# The pod is named `musicbot-pod`, not `musicbot`: podman keeps pods and
+# containers in ONE name namespace, so naming the pod after the bot container
+# fails with `name "musicbot" is in use: container already exists`.
+#
 # Install to ~/.config/systemd/user/musicbot-pod.service on the deploy account.
 
 [Unit]
@@ -16,8 +20,8 @@ Type=oneshot
 RemainAfterExit=yes
 # Idempotent: recreating the pod on every restart would tear down both
 # containers, so create it only when it is genuinely absent.
-ExecStart=/bin/sh -c '/usr/bin/podman pod exists musicbot || /usr/bin/podman pod create --name musicbot'
-ExecStop=-/usr/bin/podman pod rm -f musicbot
+ExecStart=/bin/sh -c '/usr/bin/podman pod exists musicbot-pod || /usr/bin/podman pod create --name musicbot-pod'
+ExecStop=-/usr/bin/podman pod rm -f musicbot-pod
 
 [Install]
 WantedBy=default.target

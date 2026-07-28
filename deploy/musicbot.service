@@ -44,7 +44,7 @@ ExecStartPre=-/usr/bin/podman rm -f musicbot
 ExecStart=/usr/bin/podman run \
     --rm \
     --name musicbot \
-    --pod musicbot \
+    --pod musicbot-pod \
     --log-driver=none \
     --read-only \
     --tmpfs /tmp:rw,size=64m,mode=1777,noexec,nosuid,nodev \

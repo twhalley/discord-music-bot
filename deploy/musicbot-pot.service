@@ -35,7 +35,7 @@ ExecStartPre=-/usr/bin/podman rm -f musicbot-pot
 ExecStart=/usr/bin/podman run \
     --rm \
     --name musicbot-pot \
-    --pod musicbot \
+    --pod musicbot-pod \
     --read-only \
     --tmpfs /tmp:rw,size=64m,mode=1777,noexec,nosuid,nodev \
     --cap-drop=ALL \

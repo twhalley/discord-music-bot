@@ -145,3 +145,48 @@ def test_build_track_allows_live_streams_with_no_duration() -> None:
 def test_ytdl_options_bound_socket_time() -> None:
     """A stalled host must not hold a pool thread indefinitely."""
     assert source.YTDL_OPTIONS["socket_timeout"] > 0
+
+
+class _RaisingExtractor:
+    """Stands in for yt-dlp raising its own exception type."""
+
+    def __init__(self, message: str) -> None:
+        self.message = message
+
+    def extract_info(self, url: str, download: bool = False) -> dict[str, Any] | None:
+        raise RuntimeError(self.message)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected_fragment"),
+    [
+        ("ERROR: [youtube] abc: Sign in to confirm you're not a bot.", "searching for it by name"),
+        ("ERROR: Private video. Sign in if you've been granted access", "private"),
+        ("ERROR: Video unavailable", "unavailable"),
+        ("ERROR: This video has been removed by the uploader", "removed by its uploader"),
+        ("ERROR: Unable to download webpage: timed out", "Could not reach"),
+        ("ERROR: something nobody has seen before", "Could not resolve"),
+    ],
+)
+def test_yt_dlp_errors_become_actionable_messages(raw: str, expected_fragment: str) -> None:
+    """Users get a usable sentence, not a stack trace and not yt-dlp internals."""
+    assert expected_fragment.lower() in source._friendly_error(RuntimeError(raw)).lower()
+
+
+def test_friendly_errors_never_leak_the_original_text() -> None:
+    """The raw message can name internal paths and flags; it must not be echoed."""
+    raw = "ERROR: /opt/venv/lib/secret/path failed --cookies-from-browser"
+    assert "/opt/venv" not in source._friendly_error(RuntimeError(raw))
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "ERROR: Unable to download webpage",  # contains "age" inside "webpage"
+        "ERROR: unexpected message from server",  # inside "message"
+        "ERROR: package resolution failed",  # inside "package"
+    ],
+)
+def test_bare_word_needles_do_not_mislabel(raw: str) -> None:
+    """Regression: a bare "age" needle matched webpage/message/package."""
+    assert "age-restricted" not in source._friendly_error(RuntimeError(raw))

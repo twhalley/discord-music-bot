@@ -33,6 +33,12 @@ PLAY_COOLDOWN_PER = 60.0
 CONTROL_COOLDOWN_RATE = 10
 CONTROL_COOLDOWN_PER = 60.0
 
+# How long to wait after the queue drains before leaving the channel. Not zero:
+# a /play issued just as the last track ends spends a few seconds in yt-dlp, and
+# disconnecting underneath it would drop the track the user just asked for. The
+# state is re-checked after the wait, so queueing anything cancels the departure.
+IDLE_DISCONNECT_SECONDS = 20.0
+
 
 def _display(title: str) -> str:
     """Escape a track title for safe inclusion in a Discord message.
@@ -158,6 +164,8 @@ class Music(commands.Cog):
         queue = self._queue_for(guild_id)
         track = queue.pop_next()
         if track is None:
+            # Nothing left to play: leave rather than sit idle in the channel.
+            self.bot.loop.create_task(self._leave_when_idle(guild_id, client))
             return
 
         try:
@@ -180,6 +188,27 @@ class Music(commands.Cog):
 
         client.play(audio, after=_after)
         log.info("Now playing in guild %s: %s", guild_id, _for_log(track.title))
+
+    async def _leave_when_idle(self, guild_id: int, client: discord.VoiceClient) -> None:
+        """Disconnect once the queue has drained and stayed drained.
+
+        Called when playback finds nothing left to play. The wait exists so a
+        `/play` issued as the previous track ends -- which spends a few seconds
+        in yt-dlp before anything is queued -- is not cut off mid-resolution;
+        the state is re-checked afterwards, so queueing anything cancels this.
+        """
+        await asyncio.sleep(IDLE_DISCONNECT_SECONDS)
+
+        if not client.is_connected():
+            return
+        if client.is_playing() or client.is_paused():
+            return
+        if not self._queue_for(guild_id).is_empty():
+            return
+
+        log.info("Queue empty in guild %s; leaving the channel", guild_id)
+        self._queue_for(guild_id).reset()
+        await client.disconnect()
 
     # --- commands ----------------------------------------------------------
 

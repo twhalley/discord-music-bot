@@ -70,6 +70,10 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: "1"
           ignore-unfixed: true
+          # Without this, `severity` filters only the console report: the SARIF
+          # still receives every severity, and `exit-code` keys off that. The
+          # job then fails on MEDIUMs despite claiming a HIGH/CRITICAL gate.
+          limit-severities-for-sarif: true
           # Scan for CVEs only. The secret scanner otherwise flags constants
           # bundled inside third-party libraries (e.g. yt-dlp's extractors) as
           # fake "secrets"; our real secrets are injected from the env at runtime.

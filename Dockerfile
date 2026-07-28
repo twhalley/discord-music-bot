@@ -6,8 +6,12 @@
 # Dependabot (see .github/dependabot.yml).
 
 ########################  builder  ########################
-# python:3.13-slim-bookworm
-FROM python@sha256:5f1cdbcab9a50594a79502dd73e885456d2a2fc31f1a1fa18484815b37ee9152 AS builder
+# The tag is load-bearing, not decoration: `FROM python@sha256:...` alone gives
+# Dependabot no lineage to follow, so it resolves the newest `python` image and
+# silently proposes major jumps (it moved us to Debian 13 / Python 3.14 once).
+# Keeping the tag anchors updates to 3.13-slim-bookworm; the digest still pins
+# the exact build.
+FROM python:3.13-slim-bookworm@sha256:fcbd8dfc2605ba7c2eca646846c5e892b2931e41f6227985154a596f26ab8ed7 AS builder
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -25,8 +29,8 @@ COPY src ./src
 RUN pip install --no-cache-dir .
 
 ########################  runtime  ########################
-# python:3.13-slim-bookworm
-FROM python@sha256:5f1cdbcab9a50594a79502dd73e885456d2a2fc31f1a1fa18484815b37ee9152 AS runtime
+# Keep this identical to the builder base — see the note above on the tag.
+FROM python:3.13-slim-bookworm@sha256:fcbd8dfc2605ba7c2eca646846c5e892b2931e41f6227985154a596f26ab8ed7 AS runtime
 
 # ffmpeg is required to transcode/stream audio; libopus for Discord voice.
 RUN apt-get update \

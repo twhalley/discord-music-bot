@@ -16,8 +16,10 @@
 
 [Unit]
 Description=Discord music bot (YouTube/SoundCloud)
-Wants=network-online.target
-After=network-online.target
+# Wants, not Requires: if the token provider is down the bot must still run.
+# YouTube refuses a few videos, everything else keeps working.
+Wants=network-online.target musicbot-pod.service musicbot-pot.service
+After=network-online.target musicbot-pod.service musicbot-pot.service
 # Give up only if it crash-loops hard (>5 times in 60s). These are [Unit]
 # directives — systemd silently ignores them if placed in [Service].
 StartLimitIntervalSec=60
@@ -42,6 +44,7 @@ ExecStartPre=-/usr/bin/podman rm -f musicbot
 ExecStart=/usr/bin/podman run \
     --rm \
     --name musicbot \
+    --pod musicbot \
     --log-driver=none \
     --read-only \
     --tmpfs /tmp:rw,size=64m,mode=1777,noexec,nosuid,nodev \
@@ -50,6 +53,7 @@ ExecStart=/usr/bin/podman run \
     --pids-limit=256 \
     --memory=512m \
     --env-file=%h/.config/musicbot/env \
+    --env=POT_PROVIDER_BASE_URL=http://127.0.0.1:4416 \
     ${MUSICBOT_IMAGE}
 ExecStop=/usr/bin/podman stop --time 10 musicbot
 

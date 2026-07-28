@@ -12,6 +12,7 @@ read-only and avoids buffering whole files.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Protocol, cast
 
 from musicbot.audio.queue import Track
@@ -36,6 +37,37 @@ YTDL_OPTIONS: dict[str, Any] = {
     # Never let a redirect chain wander; each hop is re-checked below anyway.
     "extractor_retries": 1,
 }
+
+# Base URL of a proof-of-origin token provider, or empty for none.
+#
+# YouTube refuses some videos from datacenter IPs with "Sign in to confirm
+# you're not a bot". Satisfying that needs a PO token, which is produced by
+# running YouTube's BotGuard challenge in a JS runtime -- yt-dlp cannot do that
+# itself, so it delegates to a provider process.
+#
+# Read from the environment rather than hard-coded, and *optional by design*:
+# unset, the bot behaves exactly as it did before -- some videos refuse to play
+# and everything else works. That means a provider outage degrades playback
+# instead of taking the bot down with it.
+POT_PROVIDER_ENV = "POT_PROVIDER_BASE_URL"
+
+
+def extractor_args() -> dict[str, dict[str, list[str]]]:
+    """Return yt-dlp extractor args for the PO token provider, if configured."""
+    base_url = os.environ.get(POT_PROVIDER_ENV, "").strip()
+    if not base_url:
+        return {}
+    return {"youtubepot-bgutilhttp": {"base_url": [base_url]}}
+
+
+def ytdl_options() -> dict[str, Any]:
+    """Return the yt-dlp options for this run, including any provider wiring."""
+    options = dict(YTDL_OPTIONS)
+    args = extractor_args()
+    if args:
+        options["extractor_args"] = args
+    return options
+
 
 # Streams whose length we cannot bound are allowed (live radio reports no
 # duration), but a single absurdly long VOD would otherwise occupy the player
@@ -171,7 +203,7 @@ def extract_info(query: str, *, extractor: _Extractor | None = None) -> dict[str
         from yt_dlp import YoutubeDL
 
         try:
-            with YoutubeDL(YTDL_OPTIONS) as ydl:
+            with YoutubeDL(ytdl_options()) as ydl:
                 info = ydl.extract_info(query, download=False)
         except SourceError:
             raise

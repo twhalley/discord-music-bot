@@ -24,6 +24,13 @@ dependencies = [
     # Revisit if discord.py starts using a wider slice of the PyNaCl API.
     "PyNaCl==1.6.2",
     "yt-dlp==2026.7.4",
+    # yt-dlp plugin that fetches a proof-of-origin token from a local provider
+    # when YouTube demands one ("Sign in to confirm you're not a bot"). yt-dlp
+    # discovers it automatically once installed. Inert unless
+    # POT_PROVIDER_BASE_URL is set, so local development needs no provider.
+    # Keep the version aligned with the provider image in
+    # deploy/musicbot-pot.service -- plugin and provider ship as a pair.
+    "bgutil-ytdlp-pot-provider==1.3.1",
 ]
 
 [project.optional-dependencies]

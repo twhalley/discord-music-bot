@@ -1,0 +1,19 @@
+# Optional: rotate the VPN exit on a schedule.
+#
+# Only useful once you have several working exits in /etc/wireguard/src. Enable
+# with:  sudo systemctl enable --now musicbot-vpn-rotate.timer
+#
+# Rotation is NOT a fix for a blocked exit -- if the provider's whole range is
+# refused, cycling through it changes nothing. It helps only when individual
+# exits get flagged at different times.
+
+[Unit]
+Description=Rotate the music bot's VPN exit
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

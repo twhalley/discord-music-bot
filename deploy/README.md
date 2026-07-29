@@ -593,6 +593,97 @@ systemctl --user restart musicbot.service
 
 ---
 
+## Routing the bot through a VPN (optional)
+
+YouTube blocks this VM's address, not the videos — the same URLs play fine from
+a domestic connection. So a different egress IP is the one thing that could
+plausibly fix it. Cookies and PO tokens were both tried and did not (see above).
+
+`deploy/vpn/musicbot-vpn` routes **only the bot's traffic** through a WireGuard
+tunnel and can rotate between exits.
+
+### Why not just `wg-quick up`
+
+A stock provider config sets `AllowedIPs = 0.0.0.0/0` and takes over the default
+route. On this VM that **breaks inbound SSH** — replies would leave via the
+tunnel while the request arrived on the public interface — locking you out and
+taking the deploy workflow with it.
+
+Instead the tunnel's routes go into a dedicated routing table, and one `ip rule`
+sends only the service account's traffic there:
+
+```
+1000:	from all uidrange 1002-1002 lookup 51820
+```
+
+Everything else — SSH, the deploy, `apt`, cloud-init — stays on the normal
+route. This works because the container is **rootless**: its packets are emitted
+by `slirp4netns` running as the service account, so they carry that uid. The
+same property the egress firewall rules depend on.
+
+### Install
+
+```bash
+sudo apt-get install -y wireguard-tools
+sudo install -m 755 musicbot-vpn /usr/local/sbin/musicbot-vpn
+sudo install -d -m 700 /etc/wireguard/src
+```
+
+Drop provider configs in as `/etc/wireguard/src/<exit>.conf`, root-owned `0600`.
+They are used as-is — the script derives its own config with the routing
+overrides applied, so a stock file needs no editing:
+
+```bash
+sudo install -m 600 ~/cryptostorm-uk.conf /etc/wireguard/src/uk.conf
+sudo install -m 600 ~/cryptostorm-nl.conf /etc/wireguard/src/nl.conf
+```
+
+⚠️ A WireGuard config contains a **private key**. `*.conf` is gitignored; keep
+them off the repo entirely.
+
+### Use
+
+```bash
+sudo musicbot-vpn list             # available exits
+sudo musicbot-vpn up uk            # route the bot through 'uk'
+sudo musicbot-vpn status           # bot's apparent IP vs the host's
+sudo musicbot-vpn check aUAdpjbvEgc 5bIr9IDXFfA   # does YouTube serve these?
+sudo musicbot-vpn rotate           # next exit in the list
+sudo musicbot-vpn down             # back to the host address
+```
+
+`status` prints both addresses, and they should differ once a tunnel is up:
+
+```
+bot sees:  <VPN exit address>
+host sees: <the VM's own address, unchanged>
+```
+
+If they match, the policy rule is not taking effect and the bot is still going
+out over the VM's own address.
+
+### Two things that will bite
+
+**Provider DNS is dropped deliberately.** `wg-quick` would rewrite
+`/etc/resolv.conf` system-wide, and the egress firewall refuses the bot's uid
+access to RFC1918 addresses — so a provider DNS on a private address fails
+silently and looks like a broken tunnel. Name resolution keeps using the host
+resolver; only the connection is tunnelled. That is a DNS leak in the privacy
+sense, and irrelevant here: what matters is the address YouTube sees.
+
+**Rotation is not a fix for a blocked range.** If the provider's whole address
+space is refused, cycling exits changes nothing. It helps only where individual
+exits are flagged at different times. `musicbot-vpn-rotate.timer` is provided
+for that case and is off by default.
+
+### Expectations
+
+Commercial VPN exits are datacenter ranges, which is precisely what YouTube is
+blocking. This may not work. **Test with `check` before wiring anything
+permanent** — that is why `check` exists, and why the timer ships disabled.
+
+---
+
 ## Logs
 
 The container writes to the journal under the deploy account, so read them as

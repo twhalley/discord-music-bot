@@ -7,6 +7,10 @@ workflow SSHes into the VM to pull the new image and restart the service.
 The whole path is: **create the VM → make it reachable → prep it once → add five
 GitHub secrets → run the Deploy workflow.** Follow the sections in order.
 
+After that, [routing the bot through a VPN](#routing-the-bot-through-a-vpn--the-fix-for-youtube-blocking)
+is optional but is the only thing found to fix YouTube refusing videos from a
+cloud address.
+
 > **The one thing to get right:** the Deploy workflow SSHes *into* the VM, so the
 > VM needs a **public IP** and **inbound TCP 22**. An instance can sit happily in
 > the `Running` state with neither, and nothing in the console will tell you.
@@ -467,137 +471,12 @@ ssh -i ~/.ssh/musicbot-deploy musicbot@<PUBLIC_IP> \
 
 ---
 
-## YouTube cookies (optional)
-
-YouTube refuses many videos when the request comes from a datacenter IP:
-
-```
-ERROR: [youtube] <id>: Sign in to confirm you're not a bot.
-```
-
-The block is on the **address, not the video** — the same URLs play fine from a
-domestic connection. Searching still works, and SoundCloud is unaffected, so
-this is only worth doing if pasted YouTube links matter to you.
-
-A proof-of-origin token provider does **not** fix it: YouTube rejects the
-request before tokens become relevant. That was tried and removed. An
-authenticated request is what gets through.
-
-### ⚠️ Tested here, and it made things WORSE
-
-Before doing any of this, know how it went on this deployment. A correctly
-exported, fully signed-in cookie jar (all of `SID`, `HSID`, `SSID`, `APISID`,
-`SAPISID`, `__Secure-1PSID`, `__Secure-3PSID`, `LOGIN_INFO`) was tested against
-the live VM:
-
-| | without cookies | with cookies |
-| --- | --- | --- |
-| Previously-failing video | bot check | **no formats** |
-| Known-good video | **OK** | **no formats** |
-| YouTube search | **OK** | **no formats** |
-| SoundCloud | OK | OK |
-
-The cookies *did* get past "Sign in to confirm you're not a bot" — the error
-changed. But YouTube then returned **zero playable formats for every video**,
-including ones that worked fine unauthenticated. Every player client was tried
-(`web`, `web_safari`, `mweb`, `tv`, `tv_embedded`, `web_embedded`), with and
-without a PO token provider. All identical.
-
-The practical result is that enabling cookies **broke YouTube entirely** rather
-than fixing it. Authenticating from a datacenter IP appears to get the session
-served metadata but no streams.
-
-So this section documents an option that did not work here. It may behave
-differently with an older, well-established account — a fresh throwaway is
-exactly the profile YouTube treats most harshly — but that is a guess, and the
-measured result was a regression.
-
-### ⚠️ And if you try anyway, read this
-
-Cookies are **account credentials**. This is a real trade-off, not a formality:
-
-- A YouTube session cookie grants **access to the Google account**, and it
-  **bypasses 2FA**. If the VM is compromised, so is that account.
-- **Use a throwaway Google account.** Never your personal one. That contains
-  the blast radius to something disposable.
-- Using an account to get past bot detection is **against YouTube's Terms of
-  Service**, and accounts do get banned for it.
-- Do not use the account in a browser at the same time. YouTube rotates
-  cookies, and concurrent use invalidates the exported session quickly.
-
-If that reads as too much risk for a music bot, it is a perfectly reasonable
-conclusion — search works, and this is the only feature you lose.
-
-### Export the cookies
-
-**On your own machine**, logged into the throwaway account:
-
-```bash
-yt-dlp --cookies-from-browser firefox --cookies cookies.txt \
-  --skip-download 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
-```
-
-Or use a "cookies.txt" browser extension that exports Netscape format. Export
-**youtube.com only** — there is no reason to ship cookies for other sites.
-
-### Install them on the VM
-
-```bash
-scp cookies.txt musicbot@<PUBLIC_IP>:/tmp/cookies.txt
-ssh -i ~/.ssh/musicbot-deploy musicbot@<PUBLIC_IP>
-export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-
-install -d -m 700 ~/.config/musicbot/cookies
-podman unshare install -m 600 -o 10001 -g 10001 \
-  /tmp/cookies.txt ~/.config/musicbot/cookies/youtube.txt
-shred -u /tmp/cookies.txt
-
-systemctl --user restart musicbot.service
-```
-
-`podman unshare` is required, and is the non-obvious part. The unit mounts the
-directory with `:U`, so podman chowns it into the container's user namespace —
-without which the in-container user cannot read a file owned by the deploy
-account. Once chowned, the *host* account can no longer write it either, so
-updates have to go through `unshare`, which enters that namespace. `10001` is
-the image's `botuser`.
-
-The mount is read-write on purpose: yt-dlp refreshes cookies as it uses them,
-and persisting those refreshes is what makes an export last weeks rather than
-days.
-
-### Verify
-
-```bash
-podman exec musicbot python -c \
-  "from musicbot.audio import source; print(source.ytdl_options().get('cookiefile'))"
-```
-
-That should print `/cookies/youtube.txt`. Then try a link that previously
-failed. If it still fails, the cookies are not being accepted — re-export them,
-and check the account has not been signed out.
-
-### When it stops working
-
-Expect to re-export periodically. Symptoms are the original sign-in error
-returning. A missing or unreadable file is **not fatal** — the bot logs a
-warning and carries on without cookies, so an expired export degrades playback
-rather than taking the bot down.
-
-To stop using cookies entirely, empty the directory and restart:
-
-```bash
-podman unshare rm -f ~/.config/musicbot/cookies/youtube.txt
-systemctl --user restart musicbot.service
-```
-
----
-
-## Routing the bot through a VPN (optional)
+## Routing the bot through a VPN — the fix for YouTube blocking
 
 YouTube blocks this VM's address, not the videos — the same URLs play fine from
-a domestic connection. So a different egress IP is the one thing that could
-plausibly fix it. Cookies and PO tokens were both tried and did not (see above).
+a domestic connection. A different egress address is what fixes it, and this is
+the approach that worked. Cookies and a PO token provider were both tried first
+and neither did; the cookies attempt is recorded below.
 
 `deploy/vpn/musicbot-vpn` routes **only the bot's traffic** through a WireGuard
 tunnel and can rotate between exits.
@@ -772,6 +651,135 @@ Measured RTT from the Phoenix VM, for choosing an exit:
 | chicago | 45 ms | | frankfurt | 138 ms |
 
 With split routing this only affects extraction speed, not voice.
+
+---
+
+## YouTube cookies — tested, and they made it worse
+
+**Kept as a record of what was tried. Do not enable this.** The VPN section
+above is the approach that works.
+
+YouTube refuses many videos when the request comes from a datacenter IP:
+
+```
+ERROR: [youtube] <id>: Sign in to confirm you're not a bot.
+```
+
+The block is on the **address, not the video** — the same URLs play fine from a
+domestic connection. Searching still works, and SoundCloud is unaffected, so
+this is only worth doing if pasted YouTube links matter to you.
+
+A proof-of-origin token provider does **not** fix it: YouTube rejects the
+request before tokens become relevant. That was tried and removed. An
+authenticated request is what gets through.
+
+### ⚠️ Tested here, and it made things WORSE
+
+Before doing any of this, know how it went on this deployment. A correctly
+exported, fully signed-in cookie jar (all of `SID`, `HSID`, `SSID`, `APISID`,
+`SAPISID`, `__Secure-1PSID`, `__Secure-3PSID`, `LOGIN_INFO`) was tested against
+the live VM:
+
+| | without cookies | with cookies |
+| --- | --- | --- |
+| Previously-failing video | bot check | **no formats** |
+| Known-good video | **OK** | **no formats** |
+| YouTube search | **OK** | **no formats** |
+| SoundCloud | OK | OK |
+
+The cookies *did* get past "Sign in to confirm you're not a bot" — the error
+changed. But YouTube then returned **zero playable formats for every video**,
+including ones that worked fine unauthenticated. Every player client was tried
+(`web`, `web_safari`, `mweb`, `tv`, `tv_embedded`, `web_embedded`), with and
+without a PO token provider. All identical.
+
+The practical result is that enabling cookies **broke YouTube entirely** rather
+than fixing it. Authenticating from a datacenter IP appears to get the session
+served metadata but no streams.
+
+So this section documents an option that did not work here. It may behave
+differently with an older, well-established account — a fresh throwaway is
+exactly the profile YouTube treats most harshly — but that is a guess, and the
+measured result was a regression.
+
+### ⚠️ And if you try anyway, read this
+
+Cookies are **account credentials**. This is a real trade-off, not a formality:
+
+- A YouTube session cookie grants **access to the Google account**, and it
+  **bypasses 2FA**. If the VM is compromised, so is that account.
+- **Use a throwaway Google account.** Never your personal one. That contains
+  the blast radius to something disposable.
+- Using an account to get past bot detection is **against YouTube's Terms of
+  Service**, and accounts do get banned for it.
+- Do not use the account in a browser at the same time. YouTube rotates
+  cookies, and concurrent use invalidates the exported session quickly.
+
+If that reads as too much risk for a music bot, it is a perfectly reasonable
+conclusion — search works, and this is the only feature you lose.
+
+### Export the cookies
+
+**On your own machine**, logged into the throwaway account:
+
+```bash
+yt-dlp --cookies-from-browser firefox --cookies cookies.txt \
+  --skip-download 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+```
+
+Or use a "cookies.txt" browser extension that exports Netscape format. Export
+**youtube.com only** — there is no reason to ship cookies for other sites.
+
+### Install them on the VM
+
+```bash
+scp cookies.txt musicbot@<PUBLIC_IP>:/tmp/cookies.txt
+ssh -i ~/.ssh/musicbot-deploy musicbot@<PUBLIC_IP>
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+
+install -d -m 700 ~/.config/musicbot/cookies
+podman unshare install -m 600 -o 10001 -g 10001 \
+  /tmp/cookies.txt ~/.config/musicbot/cookies/youtube.txt
+shred -u /tmp/cookies.txt
+
+systemctl --user restart musicbot.service
+```
+
+`podman unshare` is required, and is the non-obvious part. The unit mounts the
+directory with `:U`, so podman chowns it into the container's user namespace —
+without which the in-container user cannot read a file owned by the deploy
+account. Once chowned, the *host* account can no longer write it either, so
+updates have to go through `unshare`, which enters that namespace. `10001` is
+the image's `botuser`.
+
+The mount is read-write on purpose: yt-dlp refreshes cookies as it uses them,
+and persisting those refreshes is what makes an export last weeks rather than
+days.
+
+### Verify
+
+```bash
+podman exec musicbot python -c \
+  "from musicbot.audio import source; print(source.ytdl_options().get('cookiefile'))"
+```
+
+That should print `/cookies/youtube.txt`. Then try a link that previously
+failed. If it still fails, the cookies are not being accepted — re-export them,
+and check the account has not been signed out.
+
+### When it stops working
+
+Expect to re-export periodically. Symptoms are the original sign-in error
+returning. A missing or unreadable file is **not fatal** — the bot logs a
+warning and carries on without cookies, so an expired export degrades playback
+rather than taking the bot down.
+
+To stop using cookies entirely, empty the directory and restart:
+
+```bash
+podman unshare rm -f ~/.config/musicbot/cookies/youtube.txt
+systemctl --user restart musicbot.service
+```
 
 ---
 

@@ -31,13 +31,15 @@ Behaviour worth knowing:
   or as soon as the last human leaves the channel — rather than holding a voice
   connection indefinitely. Queueing another track during the short grace period
   cancels the departure.
-- **Some YouTube videos will refuse to play.** YouTube gates certain videos
-  behind a sign-in when the request comes from a datacenter IP, so a link that
-  works in your browser can fail on the server. The bot says so and suggests
-  searching by name, which usually finds a playable upload. Cookies and a PO
-  token provider were both tried and neither helped — cookies actively made it
-  worse. See [the write-up](deploy/README.md#youtube-cookies-optional) before
-  spending time on it.
+- **YouTube blocks datacenter IPs**, so a link that plays in your browser can be
+  refused on a cloud VM with *"Sign in to confirm you're not a bot"*. The block
+  is on the **address, not the video**. Routing the bot's YouTube traffic
+  through a VPN fixes it — see
+  [routing the bot through a VPN](deploy/README.md#routing-the-bot-through-a-vpn-optional).
+  Cookies and a PO token provider were both tried and neither worked; cookies
+  made it worse. Without a VPN the bot says so and suggests searching by name,
+  which usually finds a playable upload.
+
 
 ## Architecture
 

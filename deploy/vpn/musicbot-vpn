@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+#
+# Route ONLY the bot's traffic through a WireGuard tunnel, and rotate exits.
+#
+# Why not just `wg-quick up` a normal config?
+# ------------------------------------------
+# A stock WireGuard config sets AllowedIPs = 0.0.0.0/0 and takes over the
+# default route. On this VM that breaks inbound SSH -- replies would leave via
+# the tunnel while the request arrived on the public interface -- which locks
+# you out and takes the GitHub deploy workflow with it.
+#
+# Instead the tunnel's routes go into a dedicated routing table, and a single
+# `ip rule` sends only the bot service account's traffic there. Everything else
+# -- SSH, the deploy, apt, cloud-init -- stays on the normal route.
+#
+# That works because the container runs ROOTLESS: its packets are emitted by
+# slirp4netns running as the service account, so they carry that uid. The same
+# property the egress firewall rules rely on.
+#
+# Usage:
+#   musicbot-vpn list                 # available exits
+#   musicbot-vpn up <exit>            # bring up, route the bot through it
+#   musicbot-vpn down                 # tear down, bot returns to the host IP
+#   musicbot-vpn status               # what is up, and the bot's apparent IP
+#   musicbot-vpn rotate               # switch to the next exit in the list
+#   musicbot-vpn check <video-id>...  # does YouTube serve these through it?
+#
+# Place provider configs at /etc/wireguard/src/<exit>.conf (root, 0600). They
+# are never used directly: `up` derives a config with the routing overrides
+# applied, so a provider's stock file can be dropped in unmodified.
+
+set -euo pipefail
+
+readonly BOT_USER="${MUSICBOT_USER:-musicbot}"
+readonly VPN_TABLE="${MUSICBOT_VPN_TABLE:-51820}"
+readonly RULE_PRIO="${MUSICBOT_VPN_RULE_PRIO:-1000}"
+readonly SRC_DIR="/etc/wireguard/src"
+readonly IFACE="mbvpn"
+readonly DERIVED="/etc/wireguard/${IFACE}.conf"
+readonly STATE="/var/lib/musicbot-vpn/current"
+
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+need_root() { [ "$(id -u)" -eq 0 ] || die "must run as root (use sudo)"; }
+
+bot_uid() { id -u "$BOT_USER" 2>/dev/null || die "no such user: $BOT_USER"; }
+
+list_exits() {
+    [ -d "$SRC_DIR" ] || die "$SRC_DIR does not exist -- put provider .conf files there"
+    find "$SRC_DIR" -maxdepth 1 -name '*.conf' -printf '%f\n' 2>/dev/null \
+        | sed 's/\.conf$//' | sort
+}
+
+# Derive a config from the provider's, forcing the routing behaviour we need.
+#
+#   Table   = <n>   keeps wg-quick off the default route
+#   PostUp  rule    sends only the bot uid to that table
+#   DNS     dropped wg-quick would rewrite /etc/resolv.conf system-wide, and a
+#                   provider DNS on a private address is refused by the egress
+#                   firewall anyway. Name resolution keeps using the host
+#                   resolver; only the connection itself is tunnelled.
+write_derived_config() {
+    local exit_name="$1" src="$SRC_DIR/$1.conf" uid
+    [ -f "$src" ] || die "unknown exit '$exit_name' (try: musicbot-vpn list)"
+    uid="$(bot_uid)"
+
+    install -m 600 /dev/null "$DERIVED"
+
+    # These MUST land inside [Interface]. Appending them to the end of the file
+    # puts them under [Peer], where wg-quick does not strip them and `wg
+    # setconf` rejects the file outright ("Line unrecognized: PostUp=...").
+    awk -v table="$VPN_TABLE" -v uid="$uid" -v tbl="$VPN_TABLE" -v prio="$RULE_PRIO" '
+        /^[[:space:]]*(Table|DNS)[[:space:]]*=/ { next }        # we set these
+        /^[[:space:]]*(PostUp|PostDown)[[:space:]]*=/ { next }  # avoid surprises
+        { print }
+        /^\[Interface\]/ {
+            print "Table = " table
+            print "# route only uid " uid " through this tunnel"
+            print "PostUp = ip rule add uidrange " uid "-" uid " lookup " tbl " priority " prio
+            print "PostDown = ip rule del uidrange " uid "-" uid " lookup " tbl " priority " prio " || true"
+        }
+    ' "$src" >> "$DERIVED"
+}
+
+apparent_ip_as_bot() {
+    # What the internet sees for the bot's uid. Run as the service account so
+    # the policy rule applies; a plain root curl would show the host IP.
+    sudo -u "$BOT_USER" curl -s --max-time 15 https://api.ipify.org 2>/dev/null || echo "unavailable"
+}
+
+apparent_ip_as_host() {
+    curl -s --max-time 15 https://api.ipify.org 2>/dev/null || echo "unavailable"
+}
+
+cmd_up() {
+    need_root
+    local exit_name="${1:-}"
+    [ -n "$exit_name" ] || die "usage: musicbot-vpn up <exit>"
+    cmd_down >/dev/null 2>&1 || true
+    write_derived_config "$exit_name"
+    wg-quick up "$IFACE"
+    install -d -m 755 "$(dirname "$STATE")"
+    printf '%s\n' "$exit_name" > "$STATE"
+    printf 'up: %s\n' "$exit_name"
+    printf 'bot sees:  %s\n' "$(apparent_ip_as_bot)"
+    printf 'host sees: %s  (unchanged, SSH safe)\n' "$(apparent_ip_as_host)"
+}
+
+cmd_down() {
+    need_root
+    wg-quick down "$IFACE" 2>/dev/null || true
+    rm -f "$DERIVED" "$STATE"
+    echo "down: bot traffic back on the host address"
+}
+
+cmd_status() {
+    local current="none"
+    [ -f "$STATE" ] && current="$(cat "$STATE")"
+    printf 'exit:      %s\n' "$current"
+    printf 'interface: %s\n' "$(ip link show "$IFACE" >/dev/null 2>&1 && echo up || echo down)"
+    printf 'rule:      %s\n' "$(ip rule list | grep -c "lookup $VPN_TABLE" || true) matching"
+    printf 'bot sees:  %s\n' "$(apparent_ip_as_bot)"
+    printf 'host sees: %s\n' "$(apparent_ip_as_host)"
+}
+
+cmd_rotate() {
+    need_root
+    local -a exits; mapfile -t exits < <(list_exits)
+    [ "${#exits[@]}" -gt 0 ] || die "no configs in $SRC_DIR"
+    local current="" next="${exits[0]}"
+    [ -f "$STATE" ] && current="$(cat "$STATE")"
+    for i in "${!exits[@]}"; do
+        if [ "${exits[$i]}" = "$current" ]; then
+            next="${exits[$(( (i + 1) % ${#exits[@]} ))]}"
+            break
+        fi
+    done
+    printf 'rotating: %s -> %s\n' "${current:-none}" "$next"
+    cmd_up "$next"
+}
+
+# Does YouTube actually serve audio through the current exit? This is the only
+# question that matters -- a tunnel that comes up but is still blocked is worth
+# nothing here.
+cmd_check() {
+    local ids=("$@")
+    [ "${#ids[@]}" -gt 0 ] || ids=(dQw4w9WgXcQ)
+    printf 'checking %d video(s) as %s...\n' "${#ids[@]}" "$BOT_USER"
+    for id in "${ids[@]}"; do
+        if sudo -u "$BOT_USER" env XDG_RUNTIME_DIR="/run/user/$(bot_uid)" \
+            podman exec musicbot python -c "
+import sys, io, contextlib
+from yt_dlp import YoutubeDL
+o={'format':'bestaudio/best','noplaylist':True,'quiet':True,'no_warnings':True,
+   'skip_download':True,'cachedir':False,'socket_timeout':25}
+buf=io.StringIO()
+try:
+    with contextlib.redirect_stderr(buf):
+        with YoutubeDL(o) as y:
+            i=y.extract_info('https://www.youtube.com/watch?v=$id',download=False)
+    sys.exit(0 if (i or {}).get('url') else 2)
+except Exception as e:
+    sys.exit(3 if 'not a bot' in str(e) else 4)
+" >/dev/null 2>&1; then
+            printf '  %-14s OK\n' "$id"
+        else
+            case $? in
+                2) printf '  %-14s no formats\n' "$id" ;;
+                3) printf '  %-14s BLOCKED (bot check)\n' "$id" ;;
+                *) printf '  %-14s failed\n' "$id" ;;
+            esac
+        fi
+    done
+}
+
+case "${1:-}" in
+    list)   list_exits ;;
+    up)     shift; cmd_up "$@" ;;
+    down)   cmd_down ;;
+    status) cmd_status ;;
+    rotate) cmd_rotate ;;
+    check)  shift; cmd_check "$@" ;;
+    *)      sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//' ; exit 1 ;;
+esac

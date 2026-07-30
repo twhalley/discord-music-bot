@@ -8,6 +8,9 @@
 cookies.txt
 cookies*.txt
 *cookies.txt
+# WireGuard configs contain a private key.
+*.conf
+wg-*.txt
 
 # Python
 __pycache__/

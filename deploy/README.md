@@ -676,11 +676,71 @@ space is refused, cycling exits changes nothing. It helps only where individual
 exits are flagged at different times. `musicbot-vpn-rotate.timer` is provided
 for that case and is off by default.
 
+### Split routing: only YouTube goes through the tunnel
+
+By default the tunnel carries **only Google/YouTube prefixes**. Everything else
+— Discord voice above all — stays on the VM's own connection, so voice takes no
+detour and no added latency.
+
+The mechanism is a routing table with *no default route*: prefixes that belong
+in the tunnel get routes there, and anything else finds no match and falls
+through to the main table.
+
+```bash
+sudo musicbot-vpn refresh-routes     # fetch Google's published ranges
+sudo musicbot-vpn up vegas           # apply
+sudo musicbot-vpn status
+```
+
+`status` reports the routing decision per destination, which is the thing that
+matters:
+
+```
+mode:      split (Google via tunnel, rest direct)
+youtube:   via mbvpn
+discord:   via enp0s6  (should NOT be mbvpn)
+```
+
+Do not read `host sees:` as a failure indicator here — under split routing the
+bot's apparent address for non-Google traffic *is* the host's. That is the
+design, not a broken tunnel.
+
+Re-run `refresh-routes` occasionally; Google's ranges change. With no prefix
+file the script falls back to a full tunnel, so a missing file degrades to
+"working, but voice takes the detour" rather than "YouTube broken".
+
+### Persistence
+
+```bash
+sudo install -m 644 musicbot-vpn.service /etc/systemd/system/
+sudo systemctl enable --now musicbot-vpn.service
+```
+
+It brings up whichever exit `/var/lib/musicbot-vpn/current` names, so
+`musicbot-vpn up <exit>` also chooses what returns after a reboot. Ordering
+only — the bot starts regardless, because it works without the tunnel; YouTube
+just refuses more videos.
+
+Verified across a real reboot: unit active, 99 prefixes routed, YouTube via the
+tunnel, Discord direct.
+
 ### Expectations
 
-Commercial VPN exits are datacenter ranges, which is precisely what YouTube is
-blocking. This may not work. **Test with `check` before wiring anything
-permanent** — that is why `check` exists, and why the timer ships disabled.
+Commercial VPN exits are datacenter ranges, which is what YouTube blocks — so
+this is **not** guaranteed. It did work here: Cryptostorm's exits served every
+video that the VM's own address could not. Use `check` before trusting any new
+exit, and keep two or three configured so `rotate` is a one-command fix.
+
+Measured RTT from the Phoenix VM, for choosing an exit:
+
+| Exit | RTT | | Exit | RTT |
+| --- | --- | --- | --- | --- |
+| la | 9 ms | | dc | 60 ms |
+| vegas | 9 ms | | newyork | 64 ms |
+| dallas | 24 ms | | london | 127 ms |
+| chicago | 45 ms | | frankfurt | 138 ms |
+
+With split routing this only affects extraction speed, not voice.
 
 ---
 

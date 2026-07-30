@@ -24,6 +24,7 @@
 #   musicbot-vpn status               # what is up, and the bot's apparent IP
 #   musicbot-vpn rotate               # switch to the next exit in the list
 #   musicbot-vpn check <video-id>...  # does YouTube serve these through it?
+#   musicbot-vpn refresh-routes       # update which prefixes use the tunnel
 #
 # Place provider configs at /etc/wireguard/src/<exit>.conf (root, 0600). They
 # are never used directly: `up` derives a config with the routing overrides
@@ -38,6 +39,10 @@ readonly SRC_DIR="/etc/wireguard/src"
 readonly IFACE="mbvpn"
 readonly DERIVED="/etc/wireguard/${IFACE}.conf"
 readonly STATE="/var/lib/musicbot-vpn/current"
+readonly SPLIT_FILE="/etc/wireguard/tunnel-prefixes.txt"
+readonly SELF="/usr/local/sbin/musicbot-vpn"
+# Google publishes the ranges that serve YouTube and its media CDN.
+readonly GOOG_URL="https://www.gstatic.com/ipranges/goog.json"
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 need_root() { [ "$(id -u)" -eq 0 ] || die "must run as root (use sudo)"; }
@@ -68,17 +73,76 @@ write_derived_config() {
     # These MUST land inside [Interface]. Appending them to the end of the file
     # puts them under [Peer], where wg-quick does not strip them and `wg
     # setconf` rejects the file outright ("Line unrecognized: PostUp=...").
-    awk -v table="$VPN_TABLE" -v uid="$uid" -v tbl="$VPN_TABLE" -v prio="$RULE_PRIO" '
+    # Table = off: wg-quick adds no routes at all. We populate the table
+    # ourselves so it can hold *either* a default route (everything tunnelled)
+    # or just the Google prefixes (split routing) -- see routes_up().
+    awk -v self="$SELF" '
         /^[[:space:]]*(Table|DNS)[[:space:]]*=/ { next }        # we set these
         /^[[:space:]]*(PostUp|PostDown)[[:space:]]*=/ { next }  # avoid surprises
         { print }
         /^\[Interface\]/ {
-            print "Table = " table
-            print "# route only uid " uid " through this tunnel"
-            print "PostUp = ip rule add uidrange " uid "-" uid " lookup " tbl " priority " prio
-            print "PostDown = ip rule del uidrange " uid "-" uid " lookup " tbl " priority " prio " || true"
+            print "Table = off"
+            print "PostUp = " self " _routes up %i"
+            print "PostDown = " self " _routes down %i"
         }
     ' "$src" >> "$DERIVED"
+}
+
+# Populate the VPN routing table and install the uid rule.
+#
+# SPLIT MODE (a prefix file exists): only those prefixes get routes in the
+# table. Anything else the bot sends finds no match there and falls through to
+# the main table -- so Discord voice goes out the VM's own connection, direct
+# and undetoured. This is why there is no default route here.
+#
+# FULL MODE (no prefix file): a default route, everything tunnelled. Kept as a
+# fallback so a missing prefix file degrades to "working but slower voice"
+# rather than "YouTube broken".
+routes_up() {
+    local iface="$1" uid; uid="$(bot_uid)"
+    ip route flush table "$VPN_TABLE" 2>/dev/null || true
+
+    if [ -s "$SPLIT_FILE" ]; then
+        local n=0
+        while read -r prefix; do
+            case "$prefix" in ''|\#*) continue ;; esac
+            ip route add "$prefix" dev "$iface" table "$VPN_TABLE" 2>/dev/null && n=$((n + 1))
+        done < "$SPLIT_FILE"
+        printf 'split routing: %d prefixes via tunnel, everything else direct\n' "$n"
+    else
+        ip route add default dev "$iface" table "$VPN_TABLE"
+        echo "full tunnel: all bot traffic via VPN (no prefix file; run: musicbot-vpn refresh-routes)"
+    fi
+
+    ip rule add uidrange "${uid}-${uid}" lookup "$VPN_TABLE" priority "$RULE_PRIO" 2>/dev/null || true
+}
+
+routes_down() {
+    local uid; uid="$(bot_uid)"
+    ip rule del uidrange "${uid}-${uid}" lookup "$VPN_TABLE" priority "$RULE_PRIO" 2>/dev/null || true
+    ip route flush table "$VPN_TABLE" 2>/dev/null || true
+}
+
+# Refresh the list of prefixes that should go through the tunnel.
+cmd_refresh_routes() {
+    need_root
+    local tmp; tmp="$(mktemp)"
+    if ! curl -fsS --max-time 30 "$GOOG_URL" -o "$tmp"; then
+        rm -f "$tmp"; die "could not fetch $GOOG_URL"
+    fi
+    python3 - "$tmp" > "$SPLIT_FILE" <<'PYEOF'
+import json, sys
+data = json.load(open(sys.argv[1]))
+print("# Google/YouTube IPv4 prefixes -- regenerate with: musicbot-vpn refresh-routes")
+for entry in data.get("prefixes", []):
+    p = entry.get("ipv4Prefix")
+    if p:
+        print(p)
+PYEOF
+    rm -f "$tmp"
+    chmod 644 "$SPLIT_FILE"
+    printf 'wrote %d prefixes to %s\n' "$(grep -vc '^#' "$SPLIT_FILE")" "$SPLIT_FILE"
+    echo "run 'musicbot-vpn up <exit>' (or rotate) to apply"
 }
 
 apparent_ip_as_bot() {
@@ -113,12 +177,25 @@ cmd_down() {
 }
 
 cmd_status() {
-    local current="none"
+    local current="none" uid; uid="$(bot_uid)"
     [ -f "$STATE" ] && current="$(cat "$STATE")"
     printf 'exit:      %s\n' "$current"
     printf 'interface: %s\n' "$(ip link show "$IFACE" >/dev/null 2>&1 && echo up || echo down)"
-    printf 'rule:      %s\n' "$(ip rule list | grep -c "lookup $VPN_TABLE" || true) matching"
-    printf 'bot sees:  %s\n' "$(apparent_ip_as_bot)"
+    printf 'routes:    %s in table %s\n' "$(ip route show table "$VPN_TABLE" 2>/dev/null | wc -l)" "$VPN_TABLE"
+    printf 'mode:      %s\n' \
+        "$(ip route show table "$VPN_TABLE" 2>/dev/null | grep -q '^default' && echo 'full tunnel' || echo 'split (Google via tunnel, rest direct)')"
+
+    # Under split routing the bot's apparent IP is the HOST's for anything
+    # non-Google, which looks like failure but is the point. Report which
+    # interface each destination actually selects instead -- that is the
+    # question, and it does not depend on an external echo service.
+    local yt dc
+    yt="$(getent ahostsv4 www.youtube.com 2>/dev/null | head -1 | cut -d' ' -f1)"
+    dc="$(getent ahostsv4 discord.com 2>/dev/null | head -1 | cut -d' ' -f1)"
+    [ -n "$yt" ] && printf 'youtube:   via %s\n' \
+        "$(ip route get "$yt" uid "$uid" 2>/dev/null | head -1 | grep -o 'dev [a-z0-9]*' | cut -d' ' -f2)"
+    [ -n "$dc" ] && printf 'discord:   via %s  (should NOT be %s)\n' \
+        "$(ip route get "$dc" uid "$uid" 2>/dev/null | head -1 | grep -o 'dev [a-z0-9]*' | cut -d' ' -f2)" "$IFACE"
     printf 'host sees: %s\n' "$(apparent_ip_as_host)"
 }
 
@@ -146,7 +223,11 @@ cmd_check() {
     [ "${#ids[@]}" -gt 0 ] || ids=(dQw4w9WgXcQ)
     printf 'checking %d video(s) as %s...\n' "${#ids[@]}" "$BOT_USER"
     for id in "${ids[@]}"; do
-        if sudo -u "$BOT_USER" env XDG_RUNTIME_DIR="/run/user/$(bot_uid)" \
+        # cd / first: sudo drops privileges before chdir, and root's cwd is
+        # typically /home/ubuntu which the service account cannot enter --
+        # sudo then fails with "cannot chdir" and every check reports a false
+        # negative before podman is ever reached.
+        if (cd / && sudo -u "$BOT_USER" env XDG_RUNTIME_DIR="/run/user/$(bot_uid)" \
             podman exec musicbot python -c "
 import sys, io, contextlib
 from yt_dlp import YoutubeDL
@@ -160,7 +241,7 @@ try:
     sys.exit(0 if (i or {}).get('url') else 2)
 except Exception as e:
     sys.exit(3 if 'not a bot' in str(e) else 4)
-" >/dev/null 2>&1; then
+" >/dev/null 2>&1); then
             printf '  %-14s OK\n' "$id"
         else
             case $? in
@@ -179,5 +260,7 @@ case "${1:-}" in
     status) cmd_status ;;
     rotate) cmd_rotate ;;
     check)  shift; cmd_check "$@" ;;
+    refresh-routes) cmd_refresh_routes ;;
+    _routes) need_root; case "${2:-}" in up) routes_up "${3:?}" ;; down) routes_down ;; esac ;;
     *)      sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//' ; exit 1 ;;
 esac

@@ -1,0 +1,40 @@
+# Bring the bot's VPN tunnel up at boot.
+#
+# Without this the tunnel is manual: a reboot leaves the bot on the VM's own
+# address, where YouTube refuses many videos -- and nothing announces it. The
+# symptom is "it worked yesterday".
+#
+# A SYSTEM unit, not a user one: WireGuard needs root to create the interface,
+# populate the routing table and install the ip rule. The bot itself stays a
+# rootless user unit; only the tunnel needs privilege.
+#
+# Install to /etc/systemd/system/musicbot-vpn.service, then:
+#   systemctl enable --now musicbot-vpn.service
+#
+# The exit is whatever /var/lib/musicbot-vpn/current names, so `musicbot-vpn up
+# <exit>` also decides what comes back after a reboot.
+
+[Unit]
+Description=WireGuard egress for the music bot
+Wants=network-online.target
+After=network-online.target nss-lookup.target
+# The bot works without the tunnel -- YouTube just refuses more videos -- so a
+# VPN failure must not stop it starting. Ordering only, no dependency.
+Before=user@1002.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# Read back the exit chosen last, defaulting to the first available. Without a
+# sensible default a fresh VM with configs present would come up with no tunnel
+# and no indication why.
+ExecStart=/bin/sh -c 'exit_name="$(cat /var/lib/musicbot-vpn/current 2>/dev/null || true)"; \
+    [ -n "$exit_name" ] || exit_name="$(/usr/local/sbin/musicbot-vpn list | head -1)"; \
+    [ -n "$exit_name" ] || { echo "no exits configured in /etc/wireguard/src; skipping"; exit 0; }; \
+    /usr/local/sbin/musicbot-vpn up "$exit_name"'
+
+ExecStop=/usr/local/sbin/musicbot-vpn down
+
+[Install]
+WantedBy=multi-user.target

@@ -150,10 +150,10 @@ class Music(commands.Cog):
             log.exception("Unhandled application command error", exc_info=error)
             message = "Something went wrong running that command."
 
-        if interaction.response.is_done():
-            await interaction.followup.send(message, ephemeral=True)
-        else:
-            await interaction.response.send_message(message, ephemeral=True)
+        # If the interaction already expired there is nothing to reply to, and
+        # trying produces a second, noisier traceback on top of the first.
+        with contextlib.suppress(discord.HTTPException):
+            await self._say(interaction, message, ephemeral=True)
 
     @commands.Cog.listener()
     async def on_app_command_completion(
@@ -220,13 +220,26 @@ class Music(commands.Cog):
         client = guild.voice_client
         return client if isinstance(client, discord.VoiceClient) else None
 
+    @staticmethod
+    async def _say(
+        interaction: discord.Interaction, message: str, *, ephemeral: bool = False
+    ) -> None:
+        """Reply, whether or not the interaction has already been acknowledged.
+
+        Commands defer before doing slow work, so by the time most replies are
+        sent the initial response is spent and only a followup is valid. Picking
+        the right one here keeps callers from having to track that.
+        """
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=ephemeral)
+        else:
+            await interaction.response.send_message(message, ephemeral=ephemeral)
+
     async def _ensure_voice(self, interaction: discord.Interaction) -> discord.VoiceClient | None:
         """Connect to (or move to) the caller's voice channel, returning the client."""
         user = interaction.user
         if not isinstance(user, discord.Member) or user.voice is None or user.voice.channel is None:
-            await interaction.response.send_message(
-                "You need to be in a voice channel first.", ephemeral=True
-            )
+            await self._say(interaction, "You need to be in a voice channel first.", ephemeral=True)
             return None
 
         channel = user.voice.channel
@@ -283,6 +296,14 @@ class Music(commands.Cog):
     @app_commands.describe(query="A URL or search text")
     @app_commands.checks.cooldown(PLAY_COOLDOWN_RATE, PLAY_COOLDOWN_PER)
     async def play(self, interaction: discord.Interaction, query: str) -> None:
+        # Acknowledge FIRST. Discord discards an interaction that is not
+        # answered within three seconds, and everything below can exceed that:
+        # a voice handshake, and yt-dlp extraction. Deferring later -- after
+        # _ensure_voice -- meant a slow connect burned the whole window and the
+        # user saw "The application did not respond", with the bot then failing
+        # on `404 Unknown interaction` because the token had already expired.
+        await interaction.response.defer(thinking=True)
+
         client = await self._ensure_voice(interaction)
         if client is None:
             return
@@ -295,13 +316,13 @@ class Music(commands.Cog):
         # Check before doing the expensive extraction, so a full queue costs a
         # rejected message rather than a wasted network round-trip.
         if queue.is_full():
-            await interaction.response.send_message(
+            await self._say(
+                interaction,
                 f"The queue is full ({queue.max_size} tracks). Try again once it drains.",
                 ephemeral=True,
             )
             return
 
-        await interaction.response.defer(thinking=True)
         try:
             # yt-dlp extraction is blocking network I/O; keep the event loop
             # free, and cap how many can be in flight at once.

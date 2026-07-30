@@ -467,70 +467,129 @@ ssh -i ~/.ssh/musicbot-deploy musicbot@<PUBLIC_IP> \
 
 ---
 
-## PO token provider (optional)
+## YouTube cookies (optional)
 
-YouTube refuses some videos from datacenter IPs with *"Sign in to confirm you're
-not a bot"*. Satisfying that check needs a **proof-of-origin token**, produced by
-running YouTube's BotGuard challenge in a JS runtime. yt-dlp cannot do that
-itself, so a provider process does it and the plugin in the bot image
-(`bgutil-ytdlp-pot-provider`, already a dependency) asks it on demand.
+YouTube refuses many videos when the request comes from a datacenter IP:
 
-**This is optional.** Without it the bot runs exactly as before — a few videos
-refuse to play, everything else works. The bot unit uses `Wants=`, not
-`Requires=`, so a provider failure degrades playback rather than stopping the
-bot.
+```
+ERROR: [youtube] <id>: Sign in to confirm you're not a bot.
+```
 
-It runs in a **separate container** on purpose: its entire job is executing a
-third party's obfuscated JS, which has no business sharing a process space with
-the Discord token. A podman **pod** gives both containers one network namespace,
-so the bot reaches it on `127.0.0.1:4416` without it ever binding to the VM's
-network interface.
+The block is on the **address, not the video** — the same URLs play fine from a
+domestic connection. Searching still works, and SoundCloud is unaffected, so
+this is only worth doing if pasted YouTube links matter to you.
 
-Set it up on the deploy account:
+A proof-of-origin token provider does **not** fix it: YouTube rejects the
+request before tokens become relevant. That was tried and removed. An
+authenticated request is what gets through.
+
+### ⚠️ Tested here, and it made things WORSE
+
+Before doing any of this, know how it went on this deployment. A correctly
+exported, fully signed-in cookie jar (all of `SID`, `HSID`, `SSID`, `APISID`,
+`SAPISID`, `__Secure-1PSID`, `__Secure-3PSID`, `LOGIN_INFO`) was tested against
+the live VM:
+
+| | without cookies | with cookies |
+| --- | --- | --- |
+| Previously-failing video | bot check | **no formats** |
+| Known-good video | **OK** | **no formats** |
+| YouTube search | **OK** | **no formats** |
+| SoundCloud | OK | OK |
+
+The cookies *did* get past "Sign in to confirm you're not a bot" — the error
+changed. But YouTube then returned **zero playable formats for every video**,
+including ones that worked fine unauthenticated. Every player client was tried
+(`web`, `web_safari`, `mweb`, `tv`, `tv_embedded`, `web_embedded`), with and
+without a PO token provider. All identical.
+
+The practical result is that enabling cookies **broke YouTube entirely** rather
+than fixing it. Authenticating from a datacenter IP appears to get the session
+served metadata but no streams.
+
+So this section documents an option that did not work here. It may behave
+differently with an older, well-established account — a fresh throwaway is
+exactly the profile YouTube treats most harshly — but that is a guess, and the
+measured result was a regression.
+
+### ⚠️ And if you try anyway, read this
+
+Cookies are **account credentials**. This is a real trade-off, not a formality:
+
+- A YouTube session cookie grants **access to the Google account**, and it
+  **bypasses 2FA**. If the VM is compromised, so is that account.
+- **Use a throwaway Google account.** Never your personal one. That contains
+  the blast radius to something disposable.
+- Using an account to get past bot detection is **against YouTube's Terms of
+  Service**, and accounts do get banned for it.
+- Do not use the account in a browser at the same time. YouTube rotates
+  cookies, and concurrent use invalidates the exported session quickly.
+
+If that reads as too much risk for a music bot, it is a perfectly reasonable
+conclusion — search works, and this is the only feature you lose.
+
+### Export the cookies
+
+**On your own machine**, logged into the throwaway account:
 
 ```bash
-# Pin by digest, not tag. Resolve the digest for the version matching the
-# plugin pinned in pyproject.toml -- provider and plugin ship as a pair.
-podman pull docker.io/brainicism/bgutil-ytdlp-pot-provider:1.3.1
-DIGEST=$(podman inspect docker.io/brainicism/bgutil-ytdlp-pot-provider:1.3.1 \
-  --format '{{index .RepoDigests 0}}')
-umask 077
-printf 'MUSICBOT_POT_IMAGE=%s\n' "$DIGEST" > ~/.config/musicbot/pot-image
+yt-dlp --cookies-from-browser firefox --cookies cookies.txt \
+  --skip-download 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+```
 
-# Install the two new units alongside musicbot.service, then enable them.
-systemctl --user daemon-reload
-systemctl --user enable --now musicbot-pod.service musicbot-pot.service
+Or use a "cookies.txt" browser extension that exports Netscape format. Export
+**youtube.com only** — there is no reason to ship cookies for other sites.
+
+### Install them on the VM
+
+```bash
+scp cookies.txt musicbot@<PUBLIC_IP>:/tmp/cookies.txt
+ssh -i ~/.ssh/musicbot-deploy musicbot@<PUBLIC_IP>
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+
+install -d -m 700 ~/.config/musicbot/cookies
+podman unshare install -m 600 -o 10001 -g 10001 \
+  /tmp/cookies.txt ~/.config/musicbot/cookies/youtube.txt
+shred -u /tmp/cookies.txt
+
 systemctl --user restart musicbot.service
 ```
 
-Confirm it is minting tokens:
+`podman unshare` is required, and is the non-obvious part. The unit mounts the
+directory with `:U`, so podman chowns it into the container's user namespace —
+without which the in-container user cannot read a file owned by the deploy
+account. Once chowned, the *host* account can no longer write it either, so
+updates have to go through `unshare`, which enters that namespace. `10001` is
+the image's `botuser`.
+
+The mount is read-write on purpose: yt-dlp refreshes cookies as it uses them,
+and persisting those refreshes is what makes an export last weeks rather than
+days.
+
+### Verify
 
 ```bash
-podman exec musicbot-pot true && echo running
-curl -s -X POST http://127.0.0.1:4416/get_pot \
-  -H 'Content-Type: application/json' -d '{"content_binding":"dQw4w9WgXcQ"}'
+podman exec musicbot python -c \
+  "from musicbot.audio import source; print(source.ytdl_options().get('cookiefile'))"
 ```
 
-A response containing `poToken` means it is working.
+That should print `/cookies/youtube.txt`. Then try a link that previously
+failed. If it still fails, the cookies are not being accepted — re-export them,
+and check the account has not been signed out.
 
-### What this does and does not fix
+### When it stops working
 
-- **Fixes** "Sign in to confirm you're not a bot" for most videos.
-- **Does not fix** genuinely age-restricted videos. Those require an
-  age-verified account — i.e. cookies — and no token substitutes for that.
-- **Will break periodically.** When YouTube changes BotGuard, playback fails
-  until upstream ships a fix and you bump both the plugin and the image.
+Expect to re-export periodically. Symptoms are the original sign-in error
+returning. A missing or unreadable file is **not fatal** — the bot logs a
+warning and carries on without cookies, so an expired export degrades playback
+rather than taking the bot down.
 
-### Maintenance
+To stop using cookies entirely, empty the directory and restart:
 
-⚠️ **Dependabot cannot see the image digest**, because it lives in a systemd
-unit's environment file rather than a Dockerfile. It will keep the *plugin*
-current via `pyproject.toml`; the **image digest must be bumped by hand** to
-match. Mismatched plugin and provider versions fail at token-fetch time.
-
-The provider is covered by the existing host egress rules without any change —
-those are scoped to the deploy account's uid, and this runs under the same
-account, so it cannot reach the metadata service or the VPC either.
+```bash
+podman unshare rm -f ~/.config/musicbot/cookies/youtube.txt
+systemctl --user restart musicbot.service
+```
 
 ---
 

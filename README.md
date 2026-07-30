@@ -34,9 +34,10 @@ Behaviour worth knowing:
 - **Some YouTube videos will refuse to play.** YouTube gates certain videos
   behind a sign-in when the request comes from a datacenter IP, so a link that
   works in your browser can fail on the server. The bot says so and suggests
-  searching by name, which usually finds a playable upload. An optional
-  [PO token provider](deploy/README.md#po-token-provider-optional) fixes most of
-  these; genuinely age-restricted videos need an account and stay unplayable.
+  searching by name, which usually finds a playable upload. Cookies and a PO
+  token provider were both tried and neither helped — cookies actively made it
+  worse. See [the write-up](deploy/README.md#youtube-cookies-optional) before
+  spending time on it.
 
 ## Architecture
 

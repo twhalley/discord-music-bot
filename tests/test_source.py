@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -192,30 +193,43 @@ def test_bare_word_needles_do_not_mislabel(raw: str) -> None:
     assert "age-restricted" not in source._friendly_error(RuntimeError(raw))
 
 
-def test_no_provider_configured_leaves_options_untouched(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The provider is optional: without it the bot behaves exactly as before."""
-    monkeypatch.delenv(source.POT_PROVIDER_ENV, raising=False)
-    assert source.extractor_args() == {}
-    assert "extractor_args" not in source.ytdl_options()
+def test_no_cookies_configured_leaves_options_untouched(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cookies are optional: without them the bot behaves exactly as before."""
+    monkeypatch.delenv(source.COOKIES_FILE_ENV, raising=False)
+    assert source.cookies_file() == ""
+    assert "cookiefile" not in source.ytdl_options()
 
 
-def test_provider_is_wired_in_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(source.POT_PROVIDER_ENV, "http://127.0.0.1:4416")
-    args = source.extractor_args()
-    assert args == {"youtubepot-bgutilhttp": {"base_url": ["http://127.0.0.1:4416"]}}
-    assert source.ytdl_options()["extractor_args"] == args
+def test_cookies_are_used_when_the_file_exists(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    jar = tmp_path / "youtube.txt"
+    jar.write_text("# Netscape HTTP Cookie File\n")
+    monkeypatch.setenv(source.COOKIES_FILE_ENV, str(jar))
+    assert source.cookies_file() == str(jar)
+    assert source.ytdl_options()["cookiefile"] == str(jar)
 
 
-def test_blank_provider_url_is_treated_as_unset(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An empty env var must not produce a broken base_url of ''."""
-    monkeypatch.setenv(source.POT_PROVIDER_ENV, "   ")
-    assert source.extractor_args() == {}
+def test_missing_cookies_file_is_ignored_not_fatal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An expired or not-yet-installed export must degrade, not break the bot."""
+    monkeypatch.setenv(source.COOKIES_FILE_ENV, str(tmp_path / "nope.txt"))
+    assert source.cookies_file() == ""
+    assert "cookiefile" not in source.ytdl_options()
+
+
+def test_blank_cookies_path_is_treated_as_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(source.COOKIES_FILE_ENV, "   ")
+    assert source.cookies_file() == ""
 
 
 def test_ytdl_options_does_not_mutate_the_shared_defaults(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Each call must return a copy, or provider config would leak between runs."""
-    monkeypatch.setenv(source.POT_PROVIDER_ENV, "http://127.0.0.1:4416")
+    """Each call returns a copy, or cookie config would leak between runs."""
+    jar = tmp_path / "c.txt"
+    jar.write_text("# Netscape HTTP Cookie File\n")
+    monkeypatch.setenv(source.COOKIES_FILE_ENV, str(jar))
     source.ytdl_options()
-    assert "extractor_args" not in source.YTDL_OPTIONS
+    assert "cookiefile" not in source.YTDL_OPTIONS

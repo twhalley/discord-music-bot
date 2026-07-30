@@ -38,34 +38,37 @@ YTDL_OPTIONS: dict[str, Any] = {
     "extractor_retries": 1,
 }
 
-# Base URL of a proof-of-origin token provider, or empty for none.
+# Path to a Netscape-format cookies file, or empty for none.
 #
-# YouTube refuses some videos from datacenter IPs with "Sign in to confirm
-# you're not a bot". Satisfying that needs a PO token, which is produced by
-# running YouTube's BotGuard challenge in a JS runtime -- yt-dlp cannot do that
-# itself, so it delegates to a provider process.
+# YouTube refuses many videos when the request comes from a datacenter IP:
+# "Sign in to confirm you're not a bot". The block is on the *address*, not the
+# video -- the same URLs play fine from a domestic connection -- and it is
+# applied before yt-dlp gets far enough for a proof-of-origin token to help.
+# An authenticated request is what gets past it.
 #
-# Read from the environment rather than hard-coded, and *optional by design*:
-# unset, the bot behaves exactly as it did before -- some videos refuse to play
-# and everything else works. That means a provider outage degrades playback
-# instead of taking the bot down with it.
-POT_PROVIDER_ENV = "POT_PROVIDER_BASE_URL"
+# Optional, and absent by default: unset, the bot behaves exactly as it does
+# without cookies. A missing or unreadable file is ignored rather than fatal,
+# so an expired export degrades playback instead of stopping the bot.
+COOKIES_FILE_ENV = "YTDLP_COOKIES_FILE"
 
 
-def extractor_args() -> dict[str, dict[str, list[str]]]:
-    """Return yt-dlp extractor args for the PO token provider, if configured."""
-    base_url = os.environ.get(POT_PROVIDER_ENV, "").strip()
-    if not base_url:
-        return {}
-    return {"youtubepot-bgutilhttp": {"base_url": [base_url]}}
+def cookies_file() -> str:
+    """Return a usable cookies file path, or ``""`` if none is configured."""
+    path = os.environ.get(COOKIES_FILE_ENV, "").strip()
+    if not path:
+        return ""
+    if not os.path.isfile(path):
+        log.warning("Cookies file %r is configured but missing; continuing without it", path)
+        return ""
+    return path
 
 
 def ytdl_options() -> dict[str, Any]:
-    """Return the yt-dlp options for this run, including any provider wiring."""
+    """Return the yt-dlp options for this run, including cookies if configured."""
     options = dict(YTDL_OPTIONS)
-    args = extractor_args()
-    if args:
-        options["extractor_args"] = args
+    path = cookies_file()
+    if path:
+        options["cookiefile"] = path
     return options
 
 

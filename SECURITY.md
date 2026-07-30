@@ -32,6 +32,13 @@ This project is built to be safe to run unattended:
   everything link-local and RFC1918, excepting DNS — which shares an address
   with the metadata service on Oracle Cloud. The application allowlist and this
   rule are independent layers; neither is relied on alone.
+- **Optional VPN egress is scoped, not global.** YouTube blocks datacenter
+  addresses, so the bot's YouTube traffic can be routed through a WireGuard
+  tunnel. Only the service account's uid is routed, and only to Google's
+  published prefixes — the tunnel's routing table holds no default route, so
+  everything else (Discord voice included) falls through to the host's normal
+  path. A stock `wg-quick` config would seize the default route and break
+  inbound SSH, locking out both administration and the deploy workflow.
 - **Authenticated deploys.** The deploy SSH connection pins the VM's host key
   fingerprint, so the token is never handed to an impostor host.
 - **No arbitrary outbound fetches.** `/play` takes free-form input from any
@@ -82,14 +89,17 @@ Stated plainly rather than left implied:
   cache so they are the same in practice, but the pushed digest is not verified
   against the scanned one. Attestations are published (`provenance`, `sbom`)
   but not checked at deploy time.
-- **Optional YouTube cookies are an account credential on the host.** They are
-  off by default and documented with the trade-off stated plainly: a session
-  cookie grants account access and bypasses 2FA, so it should only ever be a
-  throwaway account. Enabling them is a deliberate downgrade of the "no secrets
-  beyond the bot token" property, taken knowingly or not at all.
 - **Redirects are handled at the network layer, not the application one.** The
   host allowlist cannot see past an open redirect on an allowed host; the
   firewall rule is what actually contains that.
+- **A VPN moves trust, it does not remove it.** With the tunnel enabled, the
+  provider sees the bot's YouTube traffic instead of the cloud provider seeing
+  it. The WireGuard private key is a credential on the host, held root-only at
+  `0600`. It is off by default.
+- **Optional YouTube cookies are an account credential**, off by default and
+  documented with the trade-off stated plainly — a session cookie grants account
+  access and bypasses 2FA. They were tested here and made playback *worse*, so
+  the documentation recommends against them.
 
 ## A note on usage
 

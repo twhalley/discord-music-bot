@@ -1,0 +1,15 @@
+# Rotate away from a blocked VPN exit, if the current one has stopped working.
+#
+# Runs `musicbot-vpn health`, which probes YouTube through the current exit and
+# only rotates when it ACTUALLY fails. It never rotates on a schedule: moving
+# off a working exit risks landing on a blocked one, which would turn a health
+# check into the outage it is meant to prevent.
+
+[Unit]
+Description=Check the music bot's VPN exit and rotate if blocked
+After=musicbot-vpn.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/musicbot-vpn health

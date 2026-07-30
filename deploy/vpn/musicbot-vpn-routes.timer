@@ -1,0 +1,16 @@
+# Refresh the Google prefix list weekly.
+#
+# Google's published ranges drift. A stale list means some YouTube CDN traffic
+# quietly bypasses the tunnel and starts failing again -- which looks like a new
+# problem rather than a stale file, so this is worth automating.
+
+[Unit]
+Description=Weekly refresh of tunnelled prefixes
+
+[Timer]
+OnCalendar=weekly
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

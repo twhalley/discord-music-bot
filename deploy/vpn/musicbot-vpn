@@ -64,19 +64,21 @@ write_derived_config() {
     uid="$(bot_uid)"
 
     install -m 600 /dev/null "$DERIVED"
-    awk -v table="$VPN_TABLE" '
+
+    # These MUST land inside [Interface]. Appending them to the end of the file
+    # puts them under [Peer], where wg-quick does not strip them and `wg
+    # setconf` rejects the file outright ("Line unrecognized: PostUp=...").
+    awk -v table="$VPN_TABLE" -v uid="$uid" -v tbl="$VPN_TABLE" -v prio="$RULE_PRIO" '
         /^[[:space:]]*(Table|DNS)[[:space:]]*=/ { next }        # we set these
         /^[[:space:]]*(PostUp|PostDown)[[:space:]]*=/ { next }  # avoid surprises
         { print }
-        /^\[Interface\]/ { print "Table = " table }
+        /^\[Interface\]/ {
+            print "Table = " table
+            print "# route only uid " uid " through this tunnel"
+            print "PostUp = ip rule add uidrange " uid "-" uid " lookup " tbl " priority " prio
+            print "PostDown = ip rule del uidrange " uid "-" uid " lookup " tbl " priority " prio " || true"
+        }
     ' "$src" >> "$DERIVED"
-
-    cat >> "$DERIVED" <<EOF
-
-# --- added by musicbot-vpn: route only uid ${uid} through this tunnel ---
-PostUp = ip rule add uidrange ${uid}-${uid} lookup ${VPN_TABLE} priority ${RULE_PRIO}
-PostDown = ip rule del uidrange ${uid}-${uid} lookup ${VPN_TABLE} priority ${RULE_PRIO} || true
-EOF
 }
 
 apparent_ip_as_bot() {

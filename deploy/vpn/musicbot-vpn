@@ -25,6 +25,7 @@
 #   musicbot-vpn rotate               # switch to the next exit in the list
 #   musicbot-vpn check <video-id>...  # does YouTube serve these through it?
 #   musicbot-vpn refresh-routes       # update which prefixes use the tunnel
+#   musicbot-vpn health               # rotate away from a blocked exit, if needed
 #
 # Place provider configs at /etc/wireguard/src/<exit>.conf (root, 0600). They
 # are never used directly: `up` derives a config with the routing overrides
@@ -218,17 +219,15 @@ cmd_rotate() {
 # Does YouTube actually serve audio through the current exit? This is the only
 # question that matters -- a tunnel that comes up but is still blocked is worth
 # nothing here.
-cmd_check() {
-    local ids=("$@")
-    [ "${#ids[@]}" -gt 0 ] || ids=(dQw4w9WgXcQ)
-    printf 'checking %d video(s) as %s...\n' "${#ids[@]}" "$BOT_USER"
-    for id in "${ids[@]}"; do
-        # cd / first: sudo drops privileges before chdir, and root's cwd is
-        # typically /home/ubuntu which the service account cannot enter --
-        # sudo then fails with "cannot chdir" and every check reports a false
-        # negative before podman is ever reached.
-        if (cd / && sudo -u "$BOT_USER" env XDG_RUNTIME_DIR="/run/user/$(bot_uid)" \
-            podman exec musicbot python -c "
+# Probe one video through the current exit. 0 = playable, non-zero otherwise.
+probe_video() {
+    local id="$1"
+    # cd / first: sudo drops privileges before chdir, and root's cwd is
+    # typically /home/ubuntu which the service account cannot enter -- sudo
+    # then fails with "cannot chdir" and every probe reports a false negative
+    # before podman is ever reached.
+    (cd / && sudo -u "$BOT_USER" env XDG_RUNTIME_DIR="/run/user/$(bot_uid)" \
+        podman exec musicbot python -c "
 import sys, io, contextlib
 from yt_dlp import YoutubeDL
 o={'format':'bestaudio/best','noplaylist':True,'quiet':True,'no_warnings':True,
@@ -237,11 +236,19 @@ buf=io.StringIO()
 try:
     with contextlib.redirect_stderr(buf):
         with YoutubeDL(o) as y:
-            i=y.extract_info('https://www.youtube.com/watch?v=$id',download=False)
+            i=y.extract_info('https://www.youtube.com/watch?v=${id}',download=False)
     sys.exit(0 if (i or {}).get('url') else 2)
 except Exception as e:
     sys.exit(3 if 'not a bot' in str(e) else 4)
-" >/dev/null 2>&1); then
+" >/dev/null 2>&1)
+}
+
+cmd_check() {
+    local ids=("$@")
+    [ "${#ids[@]}" -gt 0 ] || ids=(dQw4w9WgXcQ)
+    printf 'checking %d video(s) as %s...\n' "${#ids[@]}" "$BOT_USER"
+    for id in "${ids[@]}"; do
+        if probe_video "$id"; then
             printf '  %-14s OK\n' "$id"
         else
             case $? in
@@ -253,6 +260,46 @@ except Exception as e:
     done
 }
 
+# Self-heal: if YouTube is refusing the current exit, rotate until one works.
+#
+# Exists because a flagged exit is otherwise silent -- playback simply starts
+# failing and stays failed until a human notices and investigates. With 36
+# exits configured, recovering is mechanical, so it should not need a human.
+#
+# Deliberately conservative: it only rotates when the current exit ACTUALLY
+# fails, never on a schedule. Rotating a working exit risks landing on a
+# blocked one, which would turn a health check into an outage.
+cmd_health() {
+    need_root
+    local probe="${MUSICBOT_HEALTH_VIDEO:-dQw4w9WgXcQ}"
+    local max="${MUSICBOT_HEALTH_MAX_ROTATIONS:-5}"
+
+    if probe_video "$probe"; then
+        echo "healthy: $(cat "$STATE" 2>/dev/null || echo 'no tunnel')"
+        return 0
+    fi
+
+    logger -t musicbot-vpn "exit $(cat "$STATE" 2>/dev/null) failing; rotating" 2>/dev/null || true
+    echo "current exit is failing; rotating..."
+
+    local i
+    for (( i = 1; i <= max; i++ )); do
+        cmd_rotate >/dev/null 2>&1 || true
+        sleep 5
+        if probe_video "$probe"; then
+            local now; now="$(cat "$STATE" 2>/dev/null)"
+            logger -t musicbot-vpn "recovered on exit $now" 2>/dev/null || true
+            echo "recovered on: $now"
+            return 0
+        fi
+        echo "  $(cat "$STATE" 2>/dev/null) also failing"
+    done
+
+    logger -t musicbot-vpn "no working exit after $max rotations" 2>/dev/null || true
+    echo "no working exit found after $max rotations"
+    return 1
+}
+
 case "${1:-}" in
     list)   list_exits ;;
     up)     shift; cmd_up "$@" ;;
@@ -261,6 +308,7 @@ case "${1:-}" in
     rotate) cmd_rotate ;;
     check)  shift; cmd_check "$@" ;;
     refresh-routes) cmd_refresh_routes ;;
+    health) cmd_health ;;
     _routes) need_root; case "${2:-}" in up) routes_up "${3:?}" ;; down) routes_down ;; esac ;;
     *)      sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//' ; exit 1 ;;
 esac

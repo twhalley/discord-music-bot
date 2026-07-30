@@ -1,0 +1,12 @@
+# Oneshot invoked by musicbot-vpn-routes.timer.
+
+[Unit]
+Description=Refresh tunnelled prefixes
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Re-applies to the live tunnel so a refresh takes effect without a reboot.
+ExecStart=/bin/sh -c '/usr/local/sbin/musicbot-vpn refresh-routes && \
+    { e="$(cat /var/lib/musicbot-vpn/current 2>/dev/null)"; [ -n "$e" ] && /usr/local/sbin/musicbot-vpn up "$e" || true; }'

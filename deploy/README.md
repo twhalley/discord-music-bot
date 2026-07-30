@@ -705,9 +705,40 @@ Do not read `host sees:` as a failure indicator here — under split routing the
 bot's apparent address for non-Google traffic *is* the host's. That is the
 design, not a broken tunnel.
 
-Re-run `refresh-routes` occasionally; Google's ranges change. With no prefix
-file the script falls back to a full tunnel, so a missing file degrades to
-"working, but voice takes the detour" rather than "YouTube broken".
+All 36 Cryptostorm exits can be configured at once; they share one client
+identity, so only `Endpoint` and the peer `PublicKey` differ per exit. Note the
+hostnames resolve **IPv6-first** and this VM is IPv4-only, so pin the A record
+in `Endpoint` rather than the hostname.
+
+With no prefix file the script falls back to a full tunnel, so a missing file
+degrades to "working, but voice takes the detour" rather than "YouTube broken".
+
+### Self-healing
+
+A flagged exit is otherwise silent: playback simply starts failing and stays
+failed until someone notices. With every Cryptostorm exit configured, recovering
+is mechanical, so it should not need a human.
+
+```bash
+sudo systemctl enable --now musicbot-vpn-health.timer    # every 30 min
+sudo systemctl enable --now musicbot-vpn-routes.timer    # weekly prefix refresh
+```
+
+`musicbot-vpn health` probes YouTube through the current exit and **only rotates
+when it actually fails** — never on a schedule. Rotating a working exit risks
+landing on a blocked one, which would turn a health check into the outage it is
+meant to prevent. It tries up to five exits, then gives up and logs to the
+journal under `musicbot-vpn`.
+
+Every 30 minutes rather than every few: the probe is a real YouTube extraction,
+and hammering it would itself look like automated traffic — the exact thing
+being worked around.
+
+Check it by hand any time:
+
+```bash
+sudo musicbot-vpn health     # "healthy: vegas" or rotates and reports recovery
+```
 
 ### Persistence
 

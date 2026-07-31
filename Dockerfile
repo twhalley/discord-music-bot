@@ -11,7 +11,7 @@
 # silently proposes major jumps (it moved us to Debian 13 / Python 3.14 once).
 # Keeping the tag anchors updates to 3.13-slim-bookworm; the digest still pins
 # the exact build.
-FROM python:3.13-slim-bookworm@sha256:fcbd8dfc2605ba7c2eca646846c5e892b2931e41f6227985154a596f26ab8ed7 AS builder
+FROM python:3.14-slim-bookworm@sha256:86f975aca15cf04a40b399eebede9aea7c82eae084d1f1a0a6ef6bcaae871a30 AS builder
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -30,7 +30,7 @@ RUN pip install --no-cache-dir .
 
 ########################  runtime  ########################
 # Keep this identical to the builder base — see the note above on the tag.
-FROM python:3.13-slim-bookworm@sha256:fcbd8dfc2605ba7c2eca646846c5e892b2931e41f6227985154a596f26ab8ed7 AS runtime
+FROM python:3.14-slim-bookworm@sha256:86f975aca15cf04a40b399eebede9aea7c82eae084d1f1a0a6ef6bcaae871a30 AS runtime
 
 # ffmpeg is required to transcode/stream audio; libopus for Discord voice.
 RUN apt-get update \

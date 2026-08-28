@@ -23,7 +23,7 @@ dependencies = [
     # and working in 1.6.2 (verified, and asserted in tests/test_voice_deps.py).
     # Revisit if discord.py starts using a wider slice of the PyNaCl API.
     "PyNaCl==1.6.2",
-    "yt-dlp==2026.7.4",
+    "yt-dlp==2026.8.19",
 ]
 
 [project.optional-dependencies]

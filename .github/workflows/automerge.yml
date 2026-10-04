@@ -105,7 +105,8 @@ jobs:
           # deploy workflow on its own.
           case "$HEAD_BRANCH" in
             dependabot/pip/*)
-              gh workflow run docker.yml --ref main
+              # -R again: without a checkout gh cannot infer the repo.
+              gh workflow run docker.yml --repo "$GITHUB_REPOSITORY" --ref main
               echo "Dispatched image build; a green build auto-deploys."
               ;;
           esac

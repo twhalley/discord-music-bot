@@ -31,8 +31,8 @@ dev = [
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
     "pytest-cov==7.1.0",
-    "ruff==0.15.22",
-    "mypy==2.3.0",
+    "ruff==0.16.9",
+    "mypy==2.3.1",
     "pip-audit==2.10.1",
 ]
 
@@ -40,7 +40,7 @@ dev = [
 musicbot = "musicbot.__main__:main"
 
 [build-system]
-requires = ["setuptools>=83.0.0"]
+requires = ["setuptools>=84.0.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

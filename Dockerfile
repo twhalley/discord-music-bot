@@ -28,15 +28,30 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 RUN pip install --no-cache-dir .
 
+# The venv is copied wholesale into the runtime image, and pip's _vendor tree
+# (urllib3, msgpack, setuptools, ...) trails upstream fixes, so a runtime pip
+# is a standing CVE feed the bot never uses. Strip it here, not there, so the
+# runtime stage never contains it at all.
+RUN pip uninstall -y pip
+
 ########################  runtime  ########################
 # Keep this identical to the builder base — see the note above on the tag.
 FROM python:3.13-slim-bookworm@sha256:5024f48ba9441d4b13a95d3945abc6365538e3a31109833367a1923523c6efed AS runtime
 
 # ffmpeg is required to transcode/stream audio; libopus for Discord voice.
+# The upgrade matters because the base is pinned by digest: security fixes that
+# land in Debian after that digest was cut (e.g. libpcre2) only arrive here.
+# The pip uninstall mirrors the builder stage -- the base image ships its own
+# copy in the system site-packages, and nothing installs packages at runtime.
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends ffmpeg \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip uninstall -y pip \
+    # ensurepip carries a bundled pip wheel -- the same vendored-CVE payload
+    # in zip form, and scanners unpack it. Nothing reinstalls pip here.
+    && rm -rf /usr/local/lib/python3.13/ensurepip
 
 # Run as an unprivileged, no-login user.
 RUN useradd --create-home --shell /usr/sbin/nologin --uid 10001 botuser

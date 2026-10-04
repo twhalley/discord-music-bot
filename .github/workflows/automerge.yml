@@ -86,10 +86,16 @@ jobs:
             echo "$pending check(s) still running on PR #$number; the last one to finish will merge."; exit 0
           fi
 
-          # Another event may have merged in the meantime; that is success, not
-          # an error.
-          if ! gh pr merge "$number" --merge --delete-branch; then
-            echo "Merge of #$number did not go through (likely already merged)."; exit 0
+          # -R is required: this job has no checkout, so gh cannot infer the
+          # repo from a local .git. A failed merge is only tolerated when a
+          # concurrent event already merged the PR; anything else is a real
+          # failure and must show up red.
+          if ! gh pr merge "$number" --repo "$GITHUB_REPOSITORY" --merge --delete-branch; then
+            state="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${number}" -q '.state')"
+            if [ "$state" = "closed" ]; then
+              echo "PR #$number was already merged by a concurrent event."; exit 0
+            fi
+            echo "Merge of open PR #$number failed."; exit 1
           fi
           echo "Merged PR #$number ($HEAD_BRANCH)."
 

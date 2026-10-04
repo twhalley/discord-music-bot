@@ -1,0 +1,105 @@
+name: Dependabot auto-merge
+
+# Merges Dependabot PRs once every check on the PR head is green, so routine
+# version bumps (the recurring one that matters: yt-dlp going stale and
+# YouTube 403ing) ship without a human in the loop. Runs on workflow_run so it
+# executes this file from main with no checkout of PR code, and so it needs no
+# branch protection rules (deliberately not enabled on this solo repo).
+#
+# Policy: pip and github_actions ecosystems auto-merge at any level -- the CI,
+# CodeQL and Trivy gates decide, and a red gate simply leaves the PR open.
+# docker ecosystem PRs are excluded on purpose: Dependabot proposes base-image
+# major jumps there (see the Dockerfile note on the parked 3.14 move), and
+# those stay a human decision.
+
+on:
+  workflow_run:
+    workflows: ["CI", "CodeQL"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  # Merges made with GITHUB_TOKEN deliberately do not trigger the push-driven
+  # image build (GitHub's anti-recursion rule), so this workflow dispatches it
+  # explicitly; that needs actions:write.
+  actions: write
+  checks: read
+
+concurrency:
+  group: dependabot-automerge
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    name: Merge green Dependabot PRs
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      startsWith(github.event.workflow_run.head_branch, 'dependabot/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Merge if every check on the head commit is green
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          case "$HEAD_BRANCH" in
+            dependabot/pip/*|dependabot/github_actions/*) ;;
+            *) echo "Ecosystem of $HEAD_BRANCH is not auto-merged; leaving for a human."; exit 0 ;;
+          esac
+
+          pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls?state=open&head=${GITHUB_REPOSITORY_OWNER}:${HEAD_BRANCH}" -q '.[0] // empty')"
+          if [ -z "$pr" ]; then
+            echo "No open PR for $HEAD_BRANCH (already merged or closed)."; exit 0
+          fi
+          number="$(jq -r '.number' <<<"$pr")"
+          author="$(jq -r '.user.login' <<<"$pr")"
+          pr_sha="$(jq -r '.head.sha' <<<"$pr")"
+
+          # Only Dependabot's own PRs: a human branch named dependabot/* must
+          # not inherit unattended merge rights.
+          if [ "$author" != "dependabot[bot]" ]; then
+            echo "PR #$number is authored by $author, not dependabot[bot]; skipping."; exit 0
+          fi
+
+          # The completed run vouches only for the commit it ran against.
+          if [ "$pr_sha" != "$HEAD_SHA" ]; then
+            echo "PR #$number has moved on ($pr_sha != $HEAD_SHA); newer checks will re-trigger."; exit 0
+          fi
+
+          # Both CI and CodeQL run per PR and either may finish last, so each
+          # completion re-evaluates the whole picture: merge only when every
+          # check on the commit is done and none failed.
+          checks="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100" -q '.check_runs')"
+          pending="$(jq -r '[.[] | select(.status != "completed")] | length' <<<"$checks")"
+          failed="$(jq -r '[.[] | select(.status == "completed" and (.conclusion | IN("success","neutral","skipped") | not))] | length' <<<"$checks")"
+          if [ "$failed" -gt 0 ]; then
+            jq -r '.[] | select(.status == "completed") | "\(.conclusion)\t\(.name)"' <<<"$checks"
+            echo "A check failed on PR #$number; leaving it open for a human."; exit 0
+          fi
+          if [ "$pending" -gt 0 ]; then
+            echo "$pending check(s) still running on PR #$number; the last one to finish will merge."; exit 0
+          fi
+
+          # Another event may have merged in the meantime; that is success, not
+          # an error.
+          if ! gh pr merge "$number" --merge --delete-branch; then
+            echo "Merge of #$number did not go through (likely already merged)."; exit 0
+          fi
+          echo "Merged PR #$number ($HEAD_BRANCH)."
+
+          # github_actions bumps change nothing in the image; pip bumps need a
+          # rebuild, and the GITHUB_TOKEN merge above cannot trigger the
+          # push-driven build, so dispatch it. A green build then triggers the
+          # deploy workflow on its own.
+          case "$HEAD_BRANCH" in
+            dependabot/pip/*)
+              gh workflow run docker.yml --ref main
+              echo "Dispatched image build; a green build auto-deploys."
+              ;;
+          esac

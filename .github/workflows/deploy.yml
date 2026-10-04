@@ -1,9 +1,15 @@
 name: Deploy
 
-# Manual trigger keeps deploys deliberate. The `production` environment gates
-# access to secrets and can require a reviewer's approval (repo Settings ->
-# Environments -> production -> Required reviewers).
+# Continuous deployment: a green image publish from main deploys itself, so a
+# merged dependency bump reaches the VM with no human in the loop. The manual
+# trigger remains for rollbacks (deploying an older sha tag) and reruns. The
+# `production` environment still gates access to secrets and can require a
+# reviewer's approval (repo Settings -> Environments -> production ->
+# Required reviewers).
 on:
+  workflow_run:
+    workflows: ["Build & publish image"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       tag:
@@ -24,6 +30,13 @@ concurrency:
 jobs:
   deploy:
     name: Deploy to Oracle VM
+    # workflow_run fires on every completion, so gate on the build having
+    # succeeded and having been a main build (tag builds publish versioned
+    # images but do not deploy by themselves).
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: production
@@ -81,7 +94,9 @@ jobs:
             podman image prune -f >/dev/null 2>&1 || true
         env:
           IMAGE_REPO: ghcr.io/${{ github.repository }}
-          IMAGE_TAG: ${{ github.event.inputs.tag }}
+          # inputs.tag only exists on workflow_dispatch; auto-deploys always
+          # take the tip of main.
+          IMAGE_TAG: ${{ github.event.inputs.tag || 'latest' }}
           BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}

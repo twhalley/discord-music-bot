@@ -152,8 +152,14 @@ recommended because that is where the Always Free allowance sits.
   because a bare `FROM python@sha256:` gives Dependabot no lineage and it will
   propose jumps across Debian and Python major versions as if they were digest
   bumps.
-- **Deploy** — manual, `production`-environment-gated SSH deploy with the VM's
-  host key pinned, so the bot token is never handed to an impostor host.
+- **Deploy** — `production`-environment-gated SSH deploy with the VM's host
+  key pinned, so the bot token is never handed to an impostor host. A green
+  image publish from `main` deploys automatically; the manual trigger remains
+  for rollbacks.
+- **Dependabot auto-merge** — pip and GitHub Actions bumps merge themselves
+  once every check (CI, CodeQL, the Trivy gate) is green, then rebuild and
+  redeploy. Docker base-image PRs are excluded: those carry major-version
+  jumps and stay a human decision.
 
 [`SECURITY.md`](SECURITY.md) documents the full posture and, just as
 importantly, a **Known limitations** section covering what is deliberately not

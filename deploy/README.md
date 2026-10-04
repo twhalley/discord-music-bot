@@ -1,8 +1,10 @@
 # Deploying to an Oracle Cloud "Always Free" VM
 
 This bot runs as a hardened `podman` container managed by `systemd`. GitHub
-Actions builds and scans the image, pushes it to GHCR, and a manual **Deploy**
-workflow SSHes into the VM to pull the new image and restart the service.
+Actions builds and scans the image, pushes it to GHCR, and the **Deploy**
+workflow SSHes into the VM to pull the new image and restart the service — it
+runs automatically after a green image publish from `main`, and can still be
+dispatched manually (e.g. to roll back to an older sha tag).
 
 The whole path is: **create the VM → make it reachable → prep it once → add five
 GitHub secrets → run the Deploy workflow.** Follow the sections in order.

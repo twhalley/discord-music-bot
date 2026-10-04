@@ -151,7 +151,9 @@ def build_track(info: dict[str, Any], requested_by: int) -> Track:
         title=info.get("title") or "Unknown title",
         stream_url=stream_url,
         webpage_url=info.get("webpage_url") or info.get("original_url") or stream_url,
-        duration=duration,
+        # SoundCloud reports duration as a float (YouTube as an int); Track
+        # promises whole seconds, and a float crashes the :02d duration label.
+        duration=round(duration) if isinstance(duration, int | float) else None,
         requested_by=requested_by,
     )
 

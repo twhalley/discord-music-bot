@@ -143,6 +143,23 @@ def test_build_track_allows_live_streams_with_no_duration() -> None:
     assert source.build_track(info, requested_by=1).duration is None
 
 
+def test_build_track_rounds_float_durations_to_whole_seconds() -> None:
+    """SoundCloud reports float durations; Track promises ints, and the
+    duration label's :02d formatting crashes on a float."""
+    info = {"title": "x", "url": "https://cdn.example/a", "duration": 251.689}
+    track = source.build_track(info, requested_by=1)
+    assert track.duration == 252
+    assert track.duration_label == "4:12"
+
+
+def test_build_track_drops_non_numeric_durations() -> None:
+    """A junk duration from an extractor must degrade to LIVE, not crash."""
+    info = {"title": "x", "url": "https://cdn.example/a", "duration": "251"}
+    track = source.build_track(info, requested_by=1)
+    assert track.duration is None
+    assert track.duration_label == "LIVE"
+
+
 def test_ytdl_options_bound_socket_time() -> None:
     """A stalled host must not hold a pool thread indefinitely."""
     assert source.YTDL_OPTIONS["socket_timeout"] > 0

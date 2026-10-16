@@ -14,7 +14,7 @@ dependencies = [
     # inside channel.connect() with "RuntimeError: davey library needed in
     # order to use voice". The only startup hint is a WARNING easily read as
     # advisory.
-    "davey==0.1.6",
+    "davey==0.1.7",
     # Deliberately NOT installed via discord.py's [voice] extra, and
     # deliberately newer than the PyNaCl<1.6 bound that extra declares.
     # PyNaCl 1.5.0 carries PYSEC-2026-3002, fixed in 1.6.2 -- so the extra's

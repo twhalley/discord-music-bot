@@ -11,7 +11,7 @@
 # silently proposes major jumps (it moved us to Debian 13 / Python 3.14 once).
 # Keeping the tag anchors updates to 3.13-slim-bookworm; the digest still pins
 # the exact build.
-FROM python:3.13-slim-bookworm@sha256:5024f48ba9441d4b13a95d3945abc6365538e3a31109833367a1923523c6efed AS builder
+FROM python:3.15-slim-bookworm@sha256:122756f3fe72c4f5d3d71897888204ee85774bc79de952555b8a474e1d0a5d53 AS builder
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -36,7 +36,7 @@ RUN pip uninstall -y pip
 
 ########################  runtime  ########################
 # Keep this identical to the builder base — see the note above on the tag.
-FROM python:3.13-slim-bookworm@sha256:5024f48ba9441d4b13a95d3945abc6365538e3a31109833367a1923523c6efed AS runtime
+FROM python:3.15-slim-bookworm@sha256:122756f3fe72c4f5d3d71897888204ee85774bc79de952555b8a474e1d0a5d53 AS runtime
 
 # ffmpeg is required to transcode/stream audio; libopus for Discord voice.
 # The upgrade matters because the base is pinned by digest: security fixes that
